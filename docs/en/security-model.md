@@ -1,0 +1,41 @@
+# Security model
+
+## Goals and non-goals
+
+The project protects against wrong sources, transport tampering, accidental upgrade/downgrade, command injection, secret disclosure, and persistent proxy pollution. It does not guarantee that third-party software is vulnerability-free or bypass license, account, regional, or organizational policy.
+
+## Trust hierarchy
+
+1. Reviewed repository catalog and release tags.
+2. Official GitHub API, vendor HTTPS, and official Microsoft Store/WinGet sources.
+3. Catalog-pinned SHA-256 and expected Authenticode publisher.
+4. GitHub transport mirrors or user seed files, usable only when level 3 already constrains identity.
+
+`ghfast.top` and `gh-proxy.com` are allow-listed transport candidates, not trust roots. They cannot supply versions, API metadata, or digests. The release bootstrap stops when trusted metadata cannot be obtained directly from the official GitHub API.
+
+## Acquisition and execution
+
+- Direct networking is always first; only network-class failures can trigger proxy retry.
+- URLs must use HTTPS and redirects remain subject to provider host policy.
+- Files enter a protected `%ProgramData%\Win11Bootstrap\Staging\<random GUID>` directory before validation and cannot execute until validation succeeds. The directory is removed after the attempt and is not a reusable cache.
+- Required SHA-256 comparisons are exact and have no ignore switch.
+- Required signatures need a `Valid` Authenticode status and an allowed publisher.
+- Failed files never execute; logs contain only digests, public hosts, and redacted errors.
+
+## Proxy
+
+Explicit `-ProxyUri` wins. Automatic candidates are limited to the system proxy and local Clash ports 7897/7890, and each must complete an HTTPS probe. Proxy state is applied to the process or current WinGet call and restored in `finally`. Persistent `netsh winhttp set proxy` and automatic Clash subscription access are prohibited.
+
+## Elevation and command execution
+
+The tool triggers UAC exactly once immediately before a real installation. It first resolves configuration into canonical options, so the administrator process never reopens the original JSON, and fixes the lengths and SHA-256 values of `bootstrap.ps1`, the module, catalog, and localization resource. The elevated code is a bounded fixed loader: it creates an Administrators/SYSTEM-only non-reparse snapshot under `%ProgramData%\Win11Bootstrap\Runtime\<random GUID>`, verifies each manifest item before and after copying, then starts the real script from that snapshot. A source mutation while UAC is pending, an unknown manifest entry, a path escape, or unsafe cleanup fails closed.
+
+Existing directories under `%ProgramData%\Win11Bootstrap` are never repaired into trusted state. Their owner, protected inheritance, and exact Administrators/SYSTEM access must already match policy or execution stops, preventing inheritance of a directory handle retained by an attacker before elevation. External commands use fixed executables, argument arrays, and validated enums. Every mutation path stops before elevation when `WhatIf` is active, and `WhatIf` creates no log.
+
+## Version gates and seed directory
+
+RealVNC v8+ and NoMachine v10+ are policy conflicts. Automatic uninstall or downgrade is forbidden. `SeedDirectory` does not imply trust: filename, exact hash, and full Authenticode publisher must all match one catalog tuple manually reviewed for the pinned target version; runtime never guesses that target from an untrusted installer version field. Proprietary packages without that reviewed verification tuple return `ManualActionRequired`.
+
+## Secrets and logs
+
+The repository, schema, and logs do not accept subscription, token, or license fields. URI user info is removed before logging. Real-run logs live in restricted `%ProgramData%\Win11Bootstrap\Logs`, use unpredictable GUID-bearing names, and are atomically created with `CreateNew` so an existing file is never overwritten or followed; reading them requires administrator rights. Release artifacts exclude local config, cache, logs, and installers.

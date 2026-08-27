@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/UnbalancedCat/win11-bootstrap/main/schemas/config.schema.json",
+  "title": "win11-bootstrap configuration",
+  "description": "Selection and process-scoped network options for bootstrap.ps1. Confirmation bypass is intentionally unavailable in configuration files.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "only": {
+      "$ref": "#/$defs/applicationKeys",
+      "minItems": 1,
+      "description": "Select only these applications. The -Only command-line argument takes precedence when supplied."
+    },
+    "skip": {
+      "$ref": "#/$defs/applicationKeys",
+      "description": "Skip these applications. Skip always wins over only."
+    },
+    "proxyUri": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^(?!.*[?#])(?!https?://[^/]*@)https?://",
+      "description": "Credential-free HTTP or HTTPS proxy used only by the bootstrapper process and its WinGet calls. User-info, query, and fragment components are rejected so secrets never enter native command lines."
+    },
+    "seedDirectory": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Directory containing user-supplied installers. A seed is never executed unless cataloged filename, SHA-256, and Authenticode checks all pass."
+    },
+    "noGitHubMirrors": {
+      "type": "boolean",
+      "description": "Disable allow-listed GitHub transport mirrors."
+    }
+  },
+  "$defs": {
+    "applicationKeys": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "chrome",
+          "clash-verge-rev",
+          "xftp",
+          "xshell",
+          "git",
+          "codex-desktop",
+          "vscode",
+          "intellij-idea",
+          "realvnc-server",
+          "realvnc-viewer",
+          "netease-cloudmusic",
+          "nomachine",
+          "bandizip",
+          "bing-wallpaper",
+          "wsl2-ubuntu",
+          "obsidian",
+          "cc-switch"
+        ]
+      }
+    }
+  }
+}

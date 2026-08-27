@@ -1,0 +1,10 @@
+{
+  "only": [
+    "chrome",
+    "git",
+    "vscode",
+    "obsidian"
+  ],
+  "skip": [],
+  "noGitHubMirrors": false
+}

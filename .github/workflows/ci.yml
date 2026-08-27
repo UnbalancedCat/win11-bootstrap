@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install test modules
+        shell: powershell
+        run: |
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.24.0 -Scope CurrentUser -Force
+          Import-Module Pester -RequiredVersion 5.7.1 -Force
+          Import-Module PSScriptAnalyzer -RequiredVersion 1.24.0 -Force
+
+      - name: Parse and validate repository
+        shell: powershell
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Validate-Repository.ps1
+
+      - name: Static analysis
+        shell: powershell
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Invoke-StaticAnalysis.ps1
+
+      - name: Pester
+        shell: powershell
+        run: |
+          Import-Module Pester -RequiredVersion 5.7.1 -Force -ErrorAction Stop
+          $configuration = New-PesterConfiguration
+          $configuration.Run.Path = 'tests'
+          $configuration.Run.Exit = $true
+          $configuration.Output.Verbosity = 'Detailed'
+          $configuration.TestResult.Enabled = $true
+          $configuration.TestResult.OutputPath = 'TestResults/Pester.xml'
+          Invoke-Pester -Configuration $configuration
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pester-results
+          path: TestResults/
+          if-no-files-found: ignore
