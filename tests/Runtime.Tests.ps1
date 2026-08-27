@@ -86,6 +86,47 @@ Describe 'Bootstrap runtime contract' {
             try { & $Action } catch { $threw = $true }
             if (-not $threw) { throw "$Label expected an exception." }
         }
+        $script:InvokeBootstrapChildProcess = {
+            param(
+                [Parameter(Mandatory = $true)]
+                [string]$BootstrapPath,
+
+                [Parameter(Mandatory = $true)]
+                [string]$ArgumentText
+            )
+
+            # GitHub Actions sets ErrorActionPreference to Stop. Invoke the
+            # entry point through System.Diagnostics.Process so expected child
+            # stderr remains test data instead of becoming a parent error.
+            if ($BootstrapPath.Contains('"')) {
+                throw 'The bootstrap test path contains an unsupported quote character.'
+            }
+            $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+            $startInfo.FileName = Join-Path $PSHOME 'powershell.exe'
+            $startInfo.Arguments = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "' + $BootstrapPath + '" ' + $ArgumentText
+            $startInfo.UseShellExecute = $false
+            $startInfo.CreateNoWindow = $true
+            $startInfo.RedirectStandardOutput = $true
+            $startInfo.RedirectStandardError = $true
+            $process = New-Object System.Diagnostics.Process
+            $process.StartInfo = $startInfo
+            try {
+                if (-not $process.Start()) {
+                    throw 'The bootstrap child process could not be started.'
+                }
+                $standardOutput = $process.StandardOutput.ReadToEnd()
+                $standardError = $process.StandardError.ReadToEnd()
+                $process.WaitForExit()
+                return [pscustomobject]@{
+                    ExitCode = [int]$process.ExitCode
+                    StandardOutput = $standardOutput
+                    StandardError = $standardError
+                }
+            }
+            finally {
+                $process.Dispose()
+            }
+        }
         $script:RepositoryRoot = Split-Path -Path $PSScriptRoot -Parent
         $script:ModulePath = Join-Path $script:RepositoryRoot 'src\Win11Bootstrap.psm1'
         Import-Module -Name $script:ModulePath -Force
@@ -464,10 +505,17 @@ Describe 'Bootstrap runtime contract' {
 
     It 'returns usage exit code 64 for unknown or incomplete command-line parameters' {
         $bootstrapPath = Join-Path $script:RepositoryRoot 'bootstrap.ps1'
-        & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $bootstrapPath -UnknownBootstrapOption 2>$null
-        Assert-RuntimeEqual -Actual $LASTEXITCODE -Expected 64 -Label 'Unknown parameter exit code'
-        & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $bootstrapPath -Config 2>$null
-        Assert-RuntimeEqual -Actual $LASTEXITCODE -Expected 64 -Label 'Missing parameter value exit code'
+        $unknownResult = & $script:InvokeBootstrapChildProcess -BootstrapPath $bootstrapPath -ArgumentText '-UnknownBootstrapOption'
+        Assert-RuntimeEqual -Actual $unknownResult.ExitCode -Expected 64 -Label 'Unknown parameter exit code'
+        if ($unknownResult.StandardError -notmatch 'Parameter error:') {
+            throw 'Unknown parameter failure did not emit the stable usage error category.'
+        }
+
+        $missingValueResult = & $script:InvokeBootstrapChildProcess -BootstrapPath $bootstrapPath -ArgumentText '-Config'
+        Assert-RuntimeEqual -Actual $missingValueResult.ExitCode -Expected 64 -Label 'Missing parameter value exit code'
+        if ($missingValueResult.StandardError -notmatch 'Parameter error:') {
+            throw 'Missing parameter value did not emit the stable usage error category.'
+        }
     }
 
     It 'maps elevation and secure-log policy failures to exit code 30' {
@@ -490,8 +538,11 @@ Describe 'Bootstrap runtime contract' {
 
         $bootstrapPath = Join-Path $script:RepositoryRoot 'bootstrap.ps1'
         $missingPayloadId = [Guid]::NewGuid().ToString('N')
-        & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $bootstrapPath -ElevatedPayloadId $missingPayloadId 2>$null
-        Assert-RuntimeEqual -Actual $LASTEXITCODE -Expected 30 -Label 'Missing elevation payload exit code'
+        $payloadResult = & $script:InvokeBootstrapChildProcess -BootstrapPath $bootstrapPath -ArgumentText ("-ElevatedPayloadId $missingPayloadId")
+        Assert-RuntimeEqual -Actual $payloadResult.ExitCode -Expected 30 -Label 'Missing elevation payload exit code'
+        if ($payloadResult.StandardError -notmatch 'Bootstrap security policy failure:') {
+            throw 'Missing elevation payload did not emit the stable security error category.'
+        }
     }
 
     It 'writes stable summary keys and statuses to the file without duplicating console output' {
