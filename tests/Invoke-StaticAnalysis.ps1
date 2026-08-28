@@ -16,8 +16,10 @@ $productionPaths = @(
     'src'
     'catalog'
     'tests\Get-RuntimeFingerprint.ps1'
+    'tests\New-ReleaseBundle.ps1'
     'tests\Invoke-StaticAnalysis.ps1'
     'tests\Validate-Repository.ps1'
+    'tests\acceptance'
 )
 
 foreach ($relativePath in $productionPaths) {

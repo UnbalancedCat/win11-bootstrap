@@ -33,3 +33,9 @@ README 的发布安装方法必须先调用官方 GitHub Release API，要求资
 ## 发布权限
 
 发布前使用 `gh auth status` 验证正确的 GitHub 账号与仓库权限。不得把令牌写入仓库、配置样例、Actions 日志或发布产物。当前环境认证无效时，只保留本地标签/产物验证，不尝试绕过认证。
+
+## 确定性候选门禁
+
+验收工具合并后，只能在 `main` 手动触发 Candidate。它用共享构建器连续打包两次，要求字节完全相同，上传 ZIP/摘要并生成 build provenance。下载后必须同时通过 SHA-256 与 `gh attestation verify`，再把 ZIP 摘要、运行时指纹、候选/工具 commit、workflow URL、attestation 结果、两份 ISO/build、七天内日期范围、测试者和证据 URL 写入 `docs/acceptance/vX.Y.Z.md`。
+
+最小 ZIP 只含 `bootstrap.ps1`、`bootstrap.example.json`、`src/`、`catalog/`、`schemas/`、`resources/`、`docs/index.md`、两种语言手册、`README.md`、`CONTRIBUTING.md`、`SECURITY.md` 和 `LICENSE`。标签 workflow 使用同一脚本重建，SHA-256 不等于已验收候选就停止。因此验收 PR 只能修改白名单外文件。只有验收 PR 合并且维护者再次明确授权发布后，才能创建标签。

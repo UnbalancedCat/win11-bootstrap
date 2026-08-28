@@ -33,3 +33,9 @@ The README release method must query the official GitHub Release API, require th
 ## Publishing permission
 
 Run `gh auth status` and verify the intended account/repository permission before publishing. Never write a token into the repository, examples, Actions logs, or artifacts. When local authentication is invalid, restrict work to local tags/artifact validation rather than bypassing authentication.
+
+## Deterministic candidate gate
+
+After tooling is merged, dispatch Candidate only on `main`. It runs the shared bundle builder twice, requires identical bytes, uploads the ZIP/checksum, and emits build provenance. Verify the downloaded archive with SHA-256 and `gh attestation verify`, then record the archive digest, runtime fingerprint, candidate/toolkit commits, workflow URL, attestation result, both ISO/build identities, seven-day date range, tester, and evidence URL in `docs/acceptance/vX.Y.Z.md`.
+
+The minimal ZIP includes only `bootstrap.ps1`, `bootstrap.example.json`, `src/`, `catalog/`, `schemas/`, `resources/`, `docs/index.md`, both language manuals, `README.md`, `CONTRIBUTING.md`, `SECURITY.md`, and `LICENSE`. The tagged workflow rebuilds with the same script and fails unless its SHA-256 equals the accepted candidate. The acceptance PR may therefore change only files outside that allowlist. A tag is created only after the acceptance PR is merged and the maintainer separately authorizes publication.

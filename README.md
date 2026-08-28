@@ -82,6 +82,10 @@ if ($zipItem.PSIsContainer -or (($zipItem.Attributes -band [IO.FileAttributes]::
 $expected = $asset.digest.Substring(7)
 $actual = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
 if ($actual -ine $expected) { throw 'Release ZIP SHA-256 mismatch.' }
+$gh = Get-Command gh.exe -ErrorAction SilentlyContinue
+if ($null -eq $gh) { throw 'GitHub CLI is required to verify build provenance before execution.' }
+& $gh.Source attestation verify $zip --repo $repository
+if ($LASTEXITCODE -ne 0) { throw 'Release ZIP build provenance verification failed.' }
 $destination = Join-Path $downloadRoot 'expanded'
 if (Test-Path -LiteralPath $destination) {
     throw 'The extraction directory unexpectedly already exists.'
@@ -108,6 +112,7 @@ Expand-Archive -LiteralPath $zip -DestinationPath $destination
 - [软件目录](docs/zh-CN/software-catalog.md)
 - [安全模型](docs/zh-CN/security-model.md)
 - [故障排除](docs/zh-CN/troubleshooting.md)
+- [验收手册](docs/zh-CN/acceptance.md)
 - [贡献指南](CONTRIBUTING.md)
 
 ## English
@@ -141,7 +146,7 @@ Start with [the example configuration](bootstrap.example.json) when automating s
 
 ### Secure download from a tagged Release
 
-After `v0.1.0` is published, use the PowerShell snippet in the Chinese section above. It obtains metadata directly from the official GitHub API, requires a canonical SemVer tag and exactly one precisely named `win11-bootstrap-$tag.zip` asset, requires the asset's official `sha256:` digest, verifies the ZIP locally, and only then starts `bootstrap.ps1`. Do not replace this with an `irm | iex` pipeline.
+After `v0.1.0` is published, use the PowerShell snippet in the Chinese section above. It obtains metadata directly from the official GitHub API, requires a canonical SemVer tag and exactly one precisely named `win11-bootstrap-$tag.zip` asset, verifies both the official `sha256:` digest and GitHub build provenance with `gh attestation verify`, and only then starts `bootstrap.ps1`. Install GitHub CLI from its official source first. Do not replace this with an `irm | iex` pipeline.
 
 ### Staged proxy workflow
 
@@ -161,6 +166,7 @@ More information:
 - [Software catalog](docs/en/software-catalog.md)
 - [Security model](docs/en/security-model.md)
 - [Troubleshooting](docs/en/troubleshooting.md)
+- [Acceptance manual](docs/en/acceptance.md)
 - [Contributing](CONTRIBUTING.md)
 
 ## License

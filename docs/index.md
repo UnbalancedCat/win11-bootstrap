@@ -13,3 +13,4 @@ The Chinese pages are normative for project behavior and policy. English pages m
 | 下载、代理与信任边界 | [安全模型](zh-CN/security-model.md) | [Security model](en/security-model.md) |
 | 常见故障 | [故障排除](zh-CN/troubleshooting.md) | [Troubleshooting](en/troubleshooting.md) |
 | CI 与发布 | [发布指南](zh-CN/releasing.md) | [Release guide](en/releasing.md) |
+| VM 验收与证据 | [验收手册](zh-CN/acceptance.md) | [Acceptance manual](en/acceptance.md) |

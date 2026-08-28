@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/UnbalancedCat/win11-bootstrap/tests/acceptance/evidence.schema.json",
+  "title": "win11-bootstrap acceptance evidence manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "scenarioId", "candidateCommit", "runtimeFingerprint",
+    "archiveSha256", "toolkitCommit", "vmId", "checkpoint", "osBuild",
+    "winGetVersion", "startedAtUtc", "endedAtUtc", "commandSha256", "exitCode",
+    "statuses", "beforeStateSha256", "afterStateSha256", "files", "events"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "scenarioId": { "pattern": "^VM-0(?:0[1-9]|10|11)$" },
+    "candidateCommit": { "pattern": "^[0-9a-f]{40}$" },
+    "runtimeFingerprint": { "pattern": "^sha256:[0-9a-f]{64}$" },
+    "archiveSha256": { "pattern": "^[0-9a-f]{64}$" },
+    "toolkitCommit": { "pattern": "^[0-9a-f]{40}$" },
+    "vmId": { "type": "string", "minLength": 1 },
+    "checkpoint": { "type": "string", "minLength": 1 },
+    "osBuild": { "type": "string", "minLength": 1 },
+    "winGetVersion": { "type": "string", "minLength": 1 },
+    "startedAtUtc": { "type": "string", "format": "date-time" },
+    "endedAtUtc": { "type": "string", "format": "date-time" },
+    "commandSha256": { "pattern": "^[0-9a-f]{64}$" },
+    "exitCode": { "enum": [0, 10, 20, 30, 64] },
+    "statuses": { "type": "object", "additionalProperties": { "enum": ["Planned", "AlreadyInstalled", "Installed", "Skipped", "NeedsProxy", "NeedsRestart", "ManualActionRequired", "NonCompliant", "Failed"] } },
+    "beforeStateSha256": { "pattern": "^[0-9a-f]{64}$" },
+    "afterStateSha256": { "pattern": "^[0-9a-f]{64}$" },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "sha256", "size"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "sha256": { "pattern": "^[0-9a-f]{64}$" },
+          "size": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "events": { "type": "array", "items": { "type": "object" } }
+  }
+}
