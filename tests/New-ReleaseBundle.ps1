@@ -24,7 +24,6 @@ $ErrorActionPreference = 'Stop'
 
 $repositoryRootPath = [System.IO.Path]::GetFullPath($RepositoryRoot).TrimEnd('\', '/')
 $outputDirectoryPath = [System.IO.Path]::GetFullPath($OutputDirectory).TrimEnd('\', '/')
-$fixedTimestamp = New-Object DateTimeOffset 1980, 1, 1, 0, 0, 0, ([TimeSpan]::Zero)
 $requiredFiles = @(
     'bootstrap.ps1'
     'bootstrap.example.json'
@@ -86,6 +85,146 @@ function Get-Sha256Hex {
         $algorithm.Dispose()
     }
     return (($hash | ForEach-Object { $_.ToString('x2') }) -join '')
+}
+
+$crc32Table = New-Object 'uint32[]' 256
+[uint32]$crc32Polynomial = [Convert]::ToUInt32('edb88320', 16)
+for ($tableIndex = 0; $tableIndex -lt $crc32Table.Length; $tableIndex++) {
+    [uint32]$value = $tableIndex
+    foreach ($bit in 1..8) {
+        if (($value -band [uint32]1) -ne 0) {
+            $value = [uint32](($value -shr 1) -bxor $crc32Polynomial)
+        }
+        else {
+            $value = [uint32]($value -shr 1)
+        }
+    }
+    $crc32Table[$tableIndex] = $value
+}
+
+function Get-Crc32 {
+    param([Parameter(Mandatory = $true)][byte[]]$Bytes)
+
+    [uint32]$crc = [uint32]::MaxValue
+    foreach ($byte in $Bytes) {
+        $tableIndex = [int](($crc -bxor [uint32]$byte) -band [uint32]0xff)
+        $crc = [uint32](($crc -shr 8) -bxor $crc32Table[$tableIndex])
+    }
+    return [uint32]($crc -bxor [uint32]::MaxValue)
+}
+
+function Write-StoredZipArchive {
+    param(
+        [Parameter(Mandatory = $true)][string]$LiteralPath,
+        [Parameter(Mandatory = $true)][string[]]$EntryPaths,
+        [Parameter(Mandatory = $true)][hashtable]$BytesByPath
+    )
+
+    if ($EntryPaths.Count -gt [uint16]::MaxValue) {
+        throw 'Release archive exceeds the ZIP32 entry-count limit.'
+    }
+
+    $utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
+    $records = New-Object 'System.Collections.Generic.List[object]'
+    $stream = [System.IO.File]::Open(
+        $LiteralPath,
+        [System.IO.FileMode]::CreateNew,
+        [System.IO.FileAccess]::Write,
+        [System.IO.FileShare]::None
+    )
+    $writer = $null
+    try {
+        $writer = New-Object System.IO.BinaryWriter($stream, $utf8WithoutBom, $true)
+        foreach ($entryPath in $EntryPaths) {
+            $nameBytes = $utf8WithoutBom.GetBytes($entryPath)
+            $contentBytes = [byte[]]$BytesByPath[$entryPath]
+            if ($nameBytes.Length -gt [uint16]::MaxValue) {
+                throw "Release archive path exceeds the ZIP32 name limit: $entryPath"
+            }
+            if ($contentBytes.LongLength -gt [uint32]::MaxValue) {
+                throw "Release archive entry exceeds the ZIP32 size limit: $entryPath"
+            }
+            if ($stream.Position -gt [uint32]::MaxValue) {
+                throw 'Release archive exceeds the ZIP32 offset limit.'
+            }
+
+            [uint32]$crc32 = Get-Crc32 -Bytes $contentBytes
+            [uint32]$contentLength = $contentBytes.Length
+            [uint32]$localHeaderOffset = $stream.Position
+
+            # Local file header: UTF-8 flag, Store method, fixed DOS epoch,
+            # no extra field, and no data descriptor.
+            $writer.Write([uint32]0x04034b50)
+            $writer.Write([uint16]20)
+            $writer.Write([uint16]0x0800)
+            $writer.Write([uint16]0)
+            $writer.Write([uint16]0)
+            $writer.Write([uint16]0x0021)
+            $writer.Write($crc32)
+            $writer.Write($contentLength)
+            $writer.Write($contentLength)
+            $writer.Write([uint16]$nameBytes.Length)
+            $writer.Write([uint16]0)
+            $writer.Write($nameBytes)
+            $writer.Write($contentBytes)
+
+            [void]$records.Add([pscustomobject]@{
+                NameBytes         = $nameBytes
+                Crc32             = $crc32
+                ContentLength     = $contentLength
+                LocalHeaderOffset = $localHeaderOffset
+            })
+        }
+
+        if ($stream.Position -gt [uint32]::MaxValue) {
+            throw 'Release archive exceeds the ZIP32 central-directory offset limit.'
+        }
+        [uint32]$centralDirectoryOffset = $stream.Position
+        foreach ($record in $records) {
+            # Central directory header. Version-made-by uses the DOS platform
+            # and all internal/external attributes remain zero.
+            $writer.Write([uint32]0x02014b50)
+            $writer.Write([uint16]20)
+            $writer.Write([uint16]20)
+            $writer.Write([uint16]0x0800)
+            $writer.Write([uint16]0)
+            $writer.Write([uint16]0)
+            $writer.Write([uint16]0x0021)
+            $writer.Write([uint32]$record.Crc32)
+            $writer.Write([uint32]$record.ContentLength)
+            $writer.Write([uint32]$record.ContentLength)
+            $writer.Write([uint16]$record.NameBytes.Length)
+            $writer.Write([uint16]0)
+            $writer.Write([uint16]0)
+            $writer.Write([uint16]0)
+            $writer.Write([uint16]0)
+            $writer.Write([uint32]0)
+            $writer.Write([uint32]$record.LocalHeaderOffset)
+            $writer.Write([byte[]]$record.NameBytes)
+        }
+
+        $centralDirectorySize = $stream.Position - $centralDirectoryOffset
+        if ($centralDirectorySize -gt [uint32]::MaxValue) {
+            throw 'Release archive exceeds the ZIP32 central-directory size limit.'
+        }
+
+        # End of central directory: one disk, no ZIP comment.
+        $writer.Write([uint32]0x06054b50)
+        $writer.Write([uint16]0)
+        $writer.Write([uint16]0)
+        $writer.Write([uint16]$records.Count)
+        $writer.Write([uint16]$records.Count)
+        $writer.Write([uint32]$centralDirectorySize)
+        $writer.Write($centralDirectoryOffset)
+        $writer.Write([uint16]0)
+        $writer.Flush()
+    }
+    finally {
+        if ($null -ne $writer) {
+            $writer.Dispose()
+        }
+        $stream.Dispose()
+    }
 }
 
 function New-ReleaseBundle {
@@ -156,38 +295,9 @@ $checksumPath = $archivePath + '.sha256'
 $temporaryDirectory = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ('win11-bootstrap-bundle-{0}' -f [Guid]::NewGuid().ToString('N'))
 
 try {
+    Write-StoredZipArchive -LiteralPath $archivePath -EntryPaths $entryPaths -BytesByPath $canonicalBytesByPath
     Add-Type -AssemblyName System.IO.Compression
     Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $archiveStream = [System.IO.File]::Open($archivePath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
-    try {
-        $archive = New-Object System.IO.Compression.ZipArchive(
-            $archiveStream,
-            [System.IO.Compression.ZipArchiveMode]::Create,
-            $false,
-            [System.Text.Encoding]::UTF8
-        )
-        try {
-            foreach ($entryPath in $entryPaths) {
-                $entry = $archive.CreateEntry($entryPath, [System.IO.Compression.CompressionLevel]::NoCompression)
-                $entry.LastWriteTime = $fixedTimestamp
-                $entry.ExternalAttributes = 0
-                $canonicalBytes = [byte[]]$canonicalBytesByPath[$entryPath]
-                $outputStream = $entry.Open()
-                try {
-                    $outputStream.Write($canonicalBytes, 0, $canonicalBytes.Length)
-                }
-                finally {
-                    $outputStream.Dispose()
-                }
-            }
-        }
-        finally {
-            $archive.Dispose()
-        }
-    }
-    finally {
-        $archiveStream.Dispose()
-    }
 
     $archiveSha256 = Get-Sha256Hex -LiteralPath $archivePath
     if ($AcceptedArchiveSha256 -and $archiveSha256 -ne $AcceptedArchiveSha256.ToLowerInvariant()) {
