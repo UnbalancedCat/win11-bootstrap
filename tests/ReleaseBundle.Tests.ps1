@@ -44,6 +44,39 @@ Describe 'Deterministic minimal release bundle' {
                 [IO.File]::WriteAllText($file.FullName, $text, $encoding)
             }
         }
+
+        function Get-ZipCentralDirectoryMethods {
+            param([Parameter(Mandatory = $true)][string]$LiteralPath)
+
+            $bytes = [IO.File]::ReadAllBytes($LiteralPath)
+            function Read-UInt16([int]$Offset) { return [BitConverter]::ToUInt16($bytes, $Offset) }
+            function Read-UInt32([int]$Offset) { return [BitConverter]::ToUInt32($bytes, $Offset) }
+
+            $minimumEocdOffset = [Math]::Max(0, $bytes.Length - 65557)
+            $eocdOffset = -1
+            for ($offset = $bytes.Length - 22; $offset -ge $minimumEocdOffset; $offset--) {
+                if ((Read-UInt32 $offset) -eq 0x06054b50) {
+                    $eocdOffset = $offset
+                    break
+                }
+            }
+            if ($eocdOffset -lt 0) { throw 'ZIP end-of-central-directory record is missing.' }
+
+            $entryCount = Read-UInt16 ($eocdOffset + 10)
+            $centralOffset = [int](Read-UInt32 ($eocdOffset + 16))
+            $methods = New-Object 'System.Collections.Generic.List[uint16]'
+            foreach ($entryIndex in 1..$entryCount) {
+                if ((Read-UInt32 $centralOffset) -ne 0x02014b50) {
+                    throw 'ZIP central-directory entry is invalid.'
+                }
+                [void]$methods.Add((Read-UInt16 ($centralOffset + 10)))
+                $nameLength = Read-UInt16 ($centralOffset + 28)
+                $extraLength = Read-UInt16 ($centralOffset + 30)
+                $commentLength = Read-UInt16 ($centralOffset + 32)
+                $centralOffset += 46 + $nameLength + $extraLength + $commentLength
+            }
+            return $methods.ToArray()
+        }
     }
 
     AfterAll {
@@ -63,6 +96,11 @@ Describe 'Deterministic minimal release bundle' {
             @($paths | Where-Object { $_ -match '^(?:tests|\.github|docs/acceptance|docs/releases)/|^AGENTS\.md$' }).Count | Should -Be 0
             @($paths | Where-Object { $_ -eq 'bootstrap.ps1' }).Count | Should -Be 1
             @($archive.Entries | Where-Object { $_.LastWriteTime.DateTime -ne [datetime]'1980-01-01T00:00:00' }).Count | Should -Be 0
+            @($archive.Entries | Where-Object { $_.CompressedLength -ne $_.Length }).Count | Should -Be 0
+            @($archive.Entries | Where-Object { $_.ExternalAttributes -ne 0 }).Count | Should -Be 0
+            $methods = @(Get-ZipCentralDirectoryMethods -LiteralPath $first.ArchivePath)
+            $methods.Count | Should -Be $paths.Count
+            @($methods | Where-Object { $_ -ne 0 }).Count | Should -Be 0
         }
         finally { $archive.Dispose() }
     }
