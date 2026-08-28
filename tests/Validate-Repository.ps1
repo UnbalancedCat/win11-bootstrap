@@ -75,6 +75,7 @@ $requiredPaths = @(
     'tests\Invoke-StaticAnalysis.ps1'
     'tests\acceptance\AcceptanceTools.psm1'
     'tests\acceptance\README.md'
+    'tests\acceptance\Invoke-SelfElevationProbe.ps1'
     'tests\acceptance\Compare-StableStatuses.ps1'
     'tests\acceptance\evidence.schema.json'
     'tests\acceptance\gateway\fault_proxy.py'

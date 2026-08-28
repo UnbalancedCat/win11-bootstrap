@@ -12,8 +12,8 @@
 
 1. Parse CLI/JSON and reject unknown properties or application keys.
 2. Resolve selection: all by default, config `only`, CLI `Only` replacement, then all skip values.
-3. Keep `WhatIf` unelevated; a real mutation first resolves configuration into canonical options and hashes the runtime files, then triggers UAC exactly once.
-4. The fixed elevated loader copies the manifest files into a restricted randomized ProgramData snapshot, verifies every copy, and starts the real entry point there. It never reopens the original config across the privilege boundary.
+3. Keep `WhatIf` unelevated; a real mutation first resolves canonical options, hashes the runtime files, and creates a one-use local named pipe, then triggers UAC exactly once. The command line contains only the random pipe name, process-binding data, envelope length, and digest—not options or the loader.
+4. The minimal elevated client and unelevated parent bind each other to exact process IDs and verify the envelope's exact length, SHA-256, version, and property set. The verified loader then copies the manifest files into a restricted randomized ProgramData snapshot, verifies every copy, and starts the real entry point there. It never reopens the original config across the privilege boundary.
 5. Run independent detectors and surface protected-major conflicts first.
 6. Show and confirm the plan.
 7. Ensure WinGet, then run Clash, ordinary applications, and WSL in that order.
@@ -36,7 +36,9 @@ Providers return structured results rather than exiting. This lets Pester mock c
 
 ## Elevation and restoration
 
-The entry point never interpolates user paths into PowerShell source. Before UAC it resolves configuration, bounds option sizes, and fixes runtime filenames, lengths, and SHA-256 values in the loader manifest. The elevated loader accepts only that manifest, creates a non-reparse snapshot under `%ProgramData%\Win11Bootstrap\Runtime\<random GUID>` that only Administrators and SYSTEM can access, verifies hashes before and after copying, and starts the snapshotted entry point with the same elevated token. A source change while UAC is pending, a pre-existing ProgramData directory whose owner/DACL does not exactly match policy, or unsafe cleanup fails closed. Snapshots are never reused as checkpoints or cache.
+The entry point never interpolates user paths into PowerShell source or relies on temporary process environment variables crossing UAC. Before UAC it resolves configuration, bounds option sizes, fixes runtime filenames, lengths, and SHA-256 values in the loader manifest, and creates a random one-use local named pipe. ACL inheritance is disabled, the Network SID is explicitly denied, and only the current user SID and SYSTEM are allowed. The parent sends the envelope only to the exact child PID returned by `Start-Process -Verb RunAs`; the child also verifies the exact parent PID through the operating-system API. The envelope must match the command-bound length, SHA-256, invocation ID, and property set. Timeout or PID, digest, or shape mismatch fails closed, with no fallback to command-line, disk, or cross-UAC environment transport.
+
+The elevated client temporarily places canonical options only in its own process so that the restricted snapshot child can inherit and consume them once. The verified loader creates a non-reparse snapshot under `%ProgramData%\Win11Bootstrap\Runtime\<random GUID>` that only Administrators and SYSTEM can access, verifies hashes before and after copying, and starts the snapshotted entry point with the same elevated token. A source change while UAC is pending, a pre-existing ProgramData directory whose owner/DACL does not exactly match policy, or unsafe cleanup fails closed. Snapshots are never reused as checkpoints or cache.
 
 Real-run logs use `%ProgramData%\Win11Bootstrap\Logs` with the same owner/DACL policy and are created atomically under GUID-bearing names with `CreateNew`; `WhatIf` creates no log. Temporary environment and WinGet proxy state is restored in `finally`. Persistent WinHTTP proxy, credentials, and automatic reboot are out of scope.
 

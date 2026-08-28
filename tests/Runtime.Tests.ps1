@@ -256,15 +256,29 @@ Describe 'Bootstrap runtime contract' {
         }
     }
 
-    It 'round-trips switch values through the one-time elevation payload as Booleans' {
+    It 'round-trips canonical options through the authenticated handoff without putting them in the command line' {
         InModuleScope Win11Bootstrap {
             $script:capturedElevationPayload = $null
             $script:capturedElevationCommandLength = 0
+            $script:capturedElevationClient = $null
+            Mock Send-BootstrapElevationEnvelope {
+                param($Server, $ExpectedClientProcessId, $EnvelopeBytes, $TimeoutMilliseconds)
+                $envelopeJson = [Text.Encoding]::UTF8.GetString([byte[]]$EnvelopeBytes)
+                $envelope = ConvertFrom-Json -InputObject $envelopeJson -ErrorAction Stop
+                $payloadJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([string]$envelope.OptionPayload))
+                $script:capturedElevationPayload = ConvertFrom-Json -InputObject $payloadJson -ErrorAction Stop
+                if ([string]$envelope.LoaderScript -notmatch 'Runtime snapshot source changed before copy') {
+                    throw 'The authenticated envelope did not contain the reviewed runtime loader.'
+                }
+                if ($ExpectedClientProcessId -ne 4242) {
+                    throw 'The handoff was not bound to the elevated process ID.'
+                }
+            }
             Mock Start-Process {
-                param($FilePath, $Verb, $ArgumentList, $WorkingDirectory, $Wait, $PassThru, $ErrorAction)
+                param($FilePath, $Verb, $ArgumentList, $WorkingDirectory, $PassThru, $ErrorAction)
                 $encodedMatch = [regex]::Match($ArgumentList, '-EncodedCommand\s+([A-Za-z0-9+/=]+)$')
                 if (-not $encodedMatch.Success) {
-                    throw 'The elevation loader was not passed as a single encoded command.'
+                    throw 'The elevation pipe client was not passed as a single encoded command.'
                 }
                 $wrapper = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($encodedMatch.Groups[1].Value))
                 if ($wrapper -notmatch 'ScriptBlock\]::Create' -or $wrapper -match '(?i)Invoke-Expression|\bIEX\b') {
@@ -282,18 +296,16 @@ Describe 'Bootstrap runtime contract' {
                 $reader.Dispose()
                 $gzip.Dispose()
                 $memory.Dispose()
-                $manifestMatch = [regex]::Match($loader, "FromBase64String\('([A-Za-z0-9+/=]+)'\)")
-                if (-not $manifestMatch.Success) {
-                    throw 'The runtime manifest was not embedded in the elevation loader.'
+                if ($loader -notmatch 'NamedPipeClientStream' -or $loader -notmatch 'GetNamedPipeServerProcessId' -or
+                    $loader -match 'WIN11_TEST_SENTINEL|\"Only\"|OptionPayload\s*=') {
+                    throw 'The elevated command exposed payload data or omitted authenticated pipe validation.'
                 }
-                $manifestJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($manifestMatch.Groups[1].Value))
-                $manifest = ConvertFrom-Json -InputObject $manifestJson -ErrorAction Stop
-                $environmentName = 'WIN11_BOOTSTRAP_ELEVATION_{0}' -f ([string]$manifest.PayloadId).ToUpperInvariant()
-                $payloadText = [Environment]::GetEnvironmentVariable($environmentName, 'Process')
-                $json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($payloadText))
-                $script:capturedElevationPayload = ConvertFrom-Json -InputObject $json -ErrorAction Stop
+                $script:capturedElevationClient = $loader
                 $script:capturedElevationCommandLength = $FilePath.Length + 1 + $ArgumentList.Length
-                return [pscustomobject]@{ ExitCode = 0 }
+                $fakeProcess = [pscustomobject]@{ ExitCode = 0; Id = 4242; HasExited = $true }
+                $fakeProcess | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value { }
+                $fakeProcess | Add-Member -MemberType ScriptMethod -Name Dispose -Value { }
+                return $fakeProcess
             }
             Mock Get-TrustedSystemExecutablePath { 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' }
 
@@ -301,15 +313,269 @@ Describe 'Bootstrap runtime contract' {
                 Only = @('git')
                 Yes = [System.Management.Automation.SwitchParameter]::new($true)
                 NoGitHubMirrors = [System.Management.Automation.SwitchParameter]::new($true)
+                SeedDirectory = 'C:\WIN11_TEST_SENTINEL'
             }
 
-            if ($exitCode -ne 0 -or
-                $script:capturedElevationPayload.Yes.GetType().FullName -cne 'System.Boolean' -or
-                $script:capturedElevationPayload.Yes -ne $true -or
-                $script:capturedElevationPayload.NoGitHubMirrors.GetType().FullName -cne 'System.Boolean' -or
-                $script:capturedElevationPayload.NoGitHubMirrors -ne $true -or
-                $script:capturedElevationCommandLength -ge 28000) {
-                throw 'Switch values did not round-trip through elevation as Booleans.'
+            $mismatches = @()
+            if ($exitCode -ne 0) { $mismatches += "exit=$exitCode" }
+            if ($script:capturedElevationPayload.Yes.GetType().FullName -cne 'System.Boolean' -or
+                $script:capturedElevationPayload.Yes -ne $true) { $mismatches += 'Yes' }
+            if ($script:capturedElevationPayload.NoGitHubMirrors.GetType().FullName -cne 'System.Boolean' -or
+                $script:capturedElevationPayload.NoGitHubMirrors -ne $true) { $mismatches += 'NoGitHubMirrors' }
+            if ($script:capturedElevationPayload.SeedDirectory -cne 'C:\WIN11_TEST_SENTINEL') { $mismatches += 'SeedDirectory' }
+            if ($script:capturedElevationClient -match 'WIN11_TEST_SENTINEL') { $mismatches += 'command-payload-leak' }
+            if ($script:capturedElevationCommandLength -ge 12000) { $mismatches += "length=$($script:capturedElevationCommandLength)" }
+            if ($mismatches.Count -ne 0) {
+                throw ('Canonical options did not round-trip through the authenticated handoff: {0}.' -f ($mismatches -join ', '))
+            }
+        }
+    }
+
+    It 'restricts the elevation pipe to the caller and SYSTEM while denying network logons' {
+        InModuleScope Win11Bootstrap {
+            $pipeName = 'win11-bootstrap-' + ([Guid]::NewGuid().ToString('N'))
+            $server = New-BootstrapElevationPipeServer -PipeName $pipeName
+            try {
+                $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+                $systemSid = New-Object Security.Principal.SecurityIdentifier(
+                    [Security.Principal.WellKnownSidType]::LocalSystemSid,
+                    $null
+                )
+                $networkSid = New-Object Security.Principal.SecurityIdentifier(
+                    [Security.Principal.WellKnownSidType]::NetworkSid,
+                    $null
+                )
+                $expected = @{
+                    $identity.User.Value = [Security.AccessControl.AccessControlType]::Allow
+                    $systemSid.Value = [Security.AccessControl.AccessControlType]::Allow
+                    $networkSid.Value = [Security.AccessControl.AccessControlType]::Deny
+                }
+                $acl = $server.GetAccessControl()
+                $rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+                if (-not $acl.AreAccessRulesProtected -or
+                    $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -cne $identity.User.Value -or
+                    $rules.Count -ne $expected.Count) {
+                    throw 'The elevation pipe ACL header is not the exact reviewed policy.'
+                }
+                foreach ($rule in $rules) {
+                    $sid = $rule.IdentityReference.Value
+                    if (-not $expected.ContainsKey($sid) -or
+                        $rule.AccessControlType -ne $expected[$sid] -or
+                        $rule.PipeAccessRights -ne [IO.Pipes.PipeAccessRights]::FullControl -or
+                        $rule.IsInherited) {
+                        throw 'The elevation pipe ACL contains an unexpected rule.'
+                    }
+                }
+            }
+            finally {
+                $server.Dispose()
+            }
+        }
+    }
+
+    It 'moves a canonical payload through a real authenticated local pipe child process' {
+        InModuleScope Win11Bootstrap {
+            $id = [Guid]::NewGuid().ToString('N')
+            $pipeName = 'win11-bootstrap-' + ([Guid]::NewGuid().ToString('N'))
+            $optionPayload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('{"Only":["git"],"Yes":true}'))
+            $environmentName = 'WIN11_BOOTSTRAP_ELEVATION_{0}' -f $id.ToUpperInvariant()
+            $loader = "if ([Environment]::GetEnvironmentVariable('$environmentName','Process') -ceq '$optionPayload') { return 0 }; return 20"
+            [byte[]]$envelopeBytes = ConvertTo-BootstrapElevationEnvelopeBytes `
+                -InvocationId $id `
+                -OptionPayload $optionPayload `
+                -LoaderScript $loader
+            $client = Get-BootstrapElevationPipeClientScript `
+                -PipeName $pipeName `
+                -ExpectedServerProcessId $PID `
+                -InvocationId $id `
+                -ExpectedLength $envelopeBytes.Length `
+                -ExpectedSha256 (Get-ByteArraySha256Hex -Bytes $envelopeBytes)
+            $arguments = ConvertTo-BootstrapEncodedLoaderArguments -LoaderScript $client
+            $server = New-BootstrapElevationPipeServer -PipeName $pipeName
+            $processInfo = New-Object Diagnostics.ProcessStartInfo
+            $processInfo.FileName = Get-TrustedSystemExecutablePath -RelativePath 'WindowsPowerShell\v1.0\powershell.exe'
+            $processInfo.Arguments = $arguments
+            $processInfo.UseShellExecute = $false
+            $processInfo.CreateNoWindow = $true
+            $processInfo.RedirectStandardError = $true
+            $process = $null
+            try {
+                $process = [Diagnostics.Process]::Start($processInfo)
+                Send-BootstrapElevationEnvelope `
+                    -Server $server `
+                    -ExpectedClientProcessId $process.Id `
+                    -EnvelopeBytes $envelopeBytes `
+                    -TimeoutMilliseconds 30000
+                $server.Dispose()
+                $server = $null
+                $process.WaitForExit()
+                $errorText = $process.StandardError.ReadToEnd()
+                if ($process.ExitCode -ne 0 -or $errorText -match 'Secure elevation .*failed|rejected unsafe state' -or
+                    -not [string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($environmentName, 'Process'))) {
+                    throw "The real local elevation handoff child failed: exit=$($process.ExitCode); stderr=$errorText"
+                }
+            }
+            finally {
+                if ($null -ne $server) { $server.Dispose() }
+                if ($null -ne $process) { $process.Dispose() }
+                [Environment]::SetEnvironmentVariable($environmentName, $null, 'Process')
+            }
+        }
+    }
+
+    It 'maps an elevation handoff hash mismatch to security failure without running the loader' {
+        InModuleScope Win11Bootstrap {
+            $id = [Guid]::NewGuid().ToString('N')
+            $pipeName = 'win11-bootstrap-' + ([Guid]::NewGuid().ToString('N'))
+            $optionPayload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('{}'))
+            [byte[]]$envelopeBytes = ConvertTo-BootstrapElevationEnvelopeBytes `
+                -InvocationId $id `
+                -OptionPayload $optionPayload `
+                -LoaderScript 'return 0'
+            $client = Get-BootstrapElevationPipeClientScript `
+                -PipeName $pipeName `
+                -ExpectedServerProcessId $PID `
+                -InvocationId $id `
+                -ExpectedLength $envelopeBytes.Length `
+                -ExpectedSha256 ('0' * 64)
+            $arguments = ConvertTo-BootstrapEncodedLoaderArguments -LoaderScript $client
+            $server = New-BootstrapElevationPipeServer -PipeName $pipeName
+            $processInfo = New-Object Diagnostics.ProcessStartInfo
+            $processInfo.FileName = Get-TrustedSystemExecutablePath -RelativePath 'WindowsPowerShell\v1.0\powershell.exe'
+            $processInfo.Arguments = $arguments
+            $processInfo.UseShellExecute = $false
+            $processInfo.CreateNoWindow = $true
+            $processInfo.RedirectStandardError = $true
+            $process = $null
+            try {
+                $process = [Diagnostics.Process]::Start($processInfo)
+                Send-BootstrapElevationEnvelope `
+                    -Server $server `
+                    -ExpectedClientProcessId $process.Id `
+                    -EnvelopeBytes $envelopeBytes `
+                    -TimeoutMilliseconds 30000
+                $server.Dispose()
+                $server = $null
+                $process.WaitForExit()
+                $errorText = $process.StandardError.ReadToEnd()
+                if ($process.ExitCode -ne 30 -or $errorText -notmatch 'envelope hash is invalid') {
+                    throw "A mismatched handoff hash was not rejected as a security failure: exit=$($process.ExitCode); stderr=$errorText"
+                }
+            }
+            finally {
+                if ($null -ne $server) { $server.Dispose() }
+                if ($null -ne $process) { $process.Dispose() }
+            }
+        }
+    }
+
+    It 'maps a malformed authenticated elevation envelope to security failure' {
+        InModuleScope Win11Bootstrap {
+            $id = [Guid]::NewGuid().ToString('N')
+            $pipeName = 'win11-bootstrap-' + ([Guid]::NewGuid().ToString('N'))
+            [byte[]]$envelopeBytes = [Text.Encoding]::UTF8.GetBytes('{not-json')
+            $client = Get-BootstrapElevationPipeClientScript `
+                -PipeName $pipeName `
+                -ExpectedServerProcessId $PID `
+                -InvocationId $id `
+                -ExpectedLength $envelopeBytes.Length `
+                -ExpectedSha256 (Get-ByteArraySha256Hex -Bytes $envelopeBytes)
+            $arguments = ConvertTo-BootstrapEncodedLoaderArguments -LoaderScript $client
+            $server = New-BootstrapElevationPipeServer -PipeName $pipeName
+            $processInfo = New-Object Diagnostics.ProcessStartInfo
+            $processInfo.FileName = Get-TrustedSystemExecutablePath -RelativePath 'WindowsPowerShell\v1.0\powershell.exe'
+            $processInfo.Arguments = $arguments
+            $processInfo.UseShellExecute = $false
+            $processInfo.CreateNoWindow = $true
+            $processInfo.RedirectStandardError = $true
+            $process = $null
+            try {
+                $process = [Diagnostics.Process]::Start($processInfo)
+                Send-BootstrapElevationEnvelope `
+                    -Server $server `
+                    -ExpectedClientProcessId $process.Id `
+                    -EnvelopeBytes $envelopeBytes `
+                    -TimeoutMilliseconds 30000
+                $server.Dispose()
+                $server = $null
+                $process.WaitForExit()
+                $errorText = $process.StandardError.ReadToEnd()
+                if ($process.ExitCode -ne 30 -or $errorText -notmatch 'encoding or JSON is invalid') {
+                    throw "A malformed authenticated envelope was not rejected as a security failure: exit=$($process.ExitCode); stderr=$errorText"
+                }
+            }
+            finally {
+                if ($null -ne $server) { $server.Dispose() }
+                if ($null -ne $process) { $process.Dispose() }
+            }
+        }
+    }
+
+    It 'refuses an unexpected pipe client PID before sending the envelope' {
+        InModuleScope Win11Bootstrap {
+            $id = [Guid]::NewGuid().ToString('N')
+            $pipeName = 'win11-bootstrap-' + ([Guid]::NewGuid().ToString('N'))
+            $optionPayload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('{}'))
+            [byte[]]$envelopeBytes = ConvertTo-BootstrapElevationEnvelopeBytes `
+                -InvocationId $id `
+                -OptionPayload $optionPayload `
+                -LoaderScript 'return 0'
+            $client = Get-BootstrapElevationPipeClientScript `
+                -PipeName $pipeName `
+                -ExpectedServerProcessId $PID `
+                -InvocationId $id `
+                -ExpectedLength $envelopeBytes.Length `
+                -ExpectedSha256 (Get-ByteArraySha256Hex -Bytes $envelopeBytes)
+            $arguments = ConvertTo-BootstrapEncodedLoaderArguments -LoaderScript $client
+            $server = New-BootstrapElevationPipeServer -PipeName $pipeName
+            $processInfo = New-Object Diagnostics.ProcessStartInfo
+            $processInfo.FileName = Get-TrustedSystemExecutablePath -RelativePath 'WindowsPowerShell\v1.0\powershell.exe'
+            $processInfo.Arguments = $arguments
+            $processInfo.UseShellExecute = $false
+            $processInfo.CreateNoWindow = $true
+            $process = $null
+            $rejected = $false
+            try {
+                $process = [Diagnostics.Process]::Start($processInfo)
+                try {
+                    Send-BootstrapElevationEnvelope `
+                        -Server $server `
+                        -ExpectedClientProcessId ($process.Id + 1) `
+                        -EnvelopeBytes $envelopeBytes `
+                        -TimeoutMilliseconds 30000
+                }
+                catch [System.Security.SecurityException] {
+                    $rejected = $true
+                }
+                $server.Dispose()
+                $server = $null
+                [void]$process.WaitForExit(10000)
+                if (-not $rejected) {
+                    throw 'The pipe server sent data without matching the elevated client PID.'
+                }
+            }
+            finally {
+                if ($null -ne $server) { $server.Dispose() }
+                if ($null -ne $process) { $process.Dispose() }
+            }
+        }
+    }
+
+    It 'normalizes an undocumented elevated child exit code to ordinary failure' {
+        InModuleScope Win11Bootstrap {
+            Mock Send-BootstrapElevationEnvelope { }
+            Mock Start-Process {
+                $fakeProcess = [pscustomobject]@{ ExitCode = 1; Id = 4343; HasExited = $true }
+                $fakeProcess | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value { }
+                $fakeProcess | Add-Member -MemberType ScriptMethod -Name Dispose -Value { }
+                return $fakeProcess
+            }
+            Mock Get-TrustedSystemExecutablePath { 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' }
+            $exitCode = Start-BootstrapElevated `
+                -ScriptPath (Join-Path $script:RepositoryRoot 'bootstrap.ps1') `
+                -Invocation @{ Only = @('git'); Yes = $true }
+            if ($exitCode -ne 20) {
+                throw 'An undocumented elevated child exit code escaped the stable exit-code contract.'
             }
         }
     }
@@ -445,10 +711,32 @@ Describe 'Bootstrap runtime contract' {
                 $loader -notmatch '\$exitCode\s*=\s*30') {
                 throw 'The elevation loader is missing fail-closed copy or guarded-cleanup behavior.'
             }
-            $arguments = ConvertTo-BootstrapEncodedLoaderArguments -LoaderScript $loader
+            $optionPayload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('{}'))
+            [byte[]]$envelopeBytes = ConvertTo-BootstrapElevationEnvelopeBytes `
+                -InvocationId ('a' * 32) `
+                -OptionPayload $optionPayload `
+                -LoaderScript $loader
+            $client = Get-BootstrapElevationPipeClientScript `
+                -PipeName ('win11-bootstrap-' + ('b' * 32)) `
+                -ExpectedServerProcessId $PID `
+                -InvocationId ('a' * 32) `
+                -ExpectedLength $envelopeBytes.Length `
+                -ExpectedSha256 (Get-ByteArraySha256Hex -Bytes $envelopeBytes)
+            [void][Management.Automation.ScriptBlock]::Create($client)
+            $arguments = ConvertTo-BootstrapEncodedLoaderArguments -LoaderScript $client
             $powerShellPath = Get-TrustedSystemExecutablePath -RelativePath 'WindowsPowerShell\v1.0\powershell.exe'
-            if (($powerShellPath.Length + 1 + $arguments.Length) -ge 28000) {
+            if (($powerShellPath.Length + 1 + $arguments.Length) -ge 12000 -or
+                $client -notmatch 'GetNamedPipeServerProcessId' -or
+                $client -notmatch 'The elevation handoff envelope hash is invalid') {
                 throw 'The complete elevation command exceeds the conservative command-line budget.'
+            }
+
+            $encodedMatch = [regex]::Match($arguments, '-EncodedCommand\s+([A-Za-z0-9+/=]+)$')
+            $outerWrapper = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($encodedMatch.Groups[1].Value))
+            [void][Management.Automation.ScriptBlock]::Create($outerWrapper)
+            if ($outerWrapper -notmatch 'catch \[Security\.SecurityException\]' -or
+                $outerWrapper -notmatch 'Secure elevation wrapper failed') {
+                throw 'The outer elevation decoder did not map failures to stable exit codes.'
             }
 
             $cleanupFunction = $loaderBlock.Ast.Find({
