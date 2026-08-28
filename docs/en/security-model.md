@@ -39,3 +39,9 @@ RealVNC v8+ and NoMachine v10+ are policy conflicts. Automatic uninstall or down
 ## Secrets and logs
 
 The repository, schema, and logs do not accept subscription, token, or license fields. URI user info is removed before logging. Real-run logs live in restricted `%ProgramData%\Win11Bootstrap\Logs`, use unpredictable GUID-bearing names, and are atomically created with `CreateNew` so an existing file is never overwritten or followed; reading them requires administrator rights. Release artifacts exclude local config, cache, logs, and installers.
+
+## Candidate provenance and private evidence
+
+Candidate and Release ZIPs are built deterministically from a strict text-file allowlist. The builder rejects dangerous extensions, executable/archive/disk-image magic, NUL-containing input, alternate streams, path escapes, and reparse points. It extracts its own output, compares the exact entry set, and recomputes the runtime fingerprint. GitHub build provenance is attached to the ZIP with a full-SHA-pinned attestation action in a job whose write permissions are limited to OIDC and attestations. Consumers verify both SHA-256 and `gh attestation verify`; neither replaces the other.
+
+Acceptance outputs are repository-external and create-new. The harness hashes command summaries instead of storing raw commands, redacts URI user info and common credential forms before writing stdout/stderr, and rejects secret-bearing evidence manifests. Gateway logs contain only time, lab client, target host/port, event, and byte count; it performs no TLS interception. Automated redaction is a guard, not authorization to publish: a human must review every Issue #1 excerpt, and any secret exposure invalidates and destroys that evidence set.

@@ -2,6 +2,8 @@
 TestResults/
 coverage.xml
 *.trx
+__pycache__/
+*.py[cod]
 
 # Bootstrap runtime data accidentally redirected into the repository
 .cache/

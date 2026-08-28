@@ -202,7 +202,7 @@ Describe 'Application catalog contract' {
         $zh = @(Get-ChildItem -LiteralPath (Join-Path $script:RepositoryRoot 'docs\zh-CN') -File -Filter '*.md' | ForEach-Object Name | Sort-Object)
         $en = @(Get-ChildItem -LiteralPath (Join-Path $script:RepositoryRoot 'docs\en') -File -Filter '*.md' | ForEach-Object Name | Sort-Object)
         Assert-TestEqual -Actual ($zh -join '|') -Expected ($en -join '|') -Label 'Bilingual documentation filenames'
-        Assert-TestEqual -Actual $zh.Count -Expected 7 -Label 'Bilingual documentation file count'
+        Assert-TestEqual -Actual $zh.Count -Expected 8 -Label 'Bilingual documentation file count'
     }
 
     It 'keeps executable files and JSON resources ASCII-only for Windows PowerShell 5.1' {

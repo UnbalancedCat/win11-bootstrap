@@ -1,12 +1,19 @@
 #requires -Version 5.1
 
 [CmdletBinding()]
-param()
+param(
+    [Parameter()]
+    [ValidateNotNullOrEmpty()]
+    [string]$RepositoryRoot = (Split-Path -Path $PSScriptRoot -Parent)
+)
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
-$repositoryRoot = Split-Path -Path $PSScriptRoot -Parent
+$repositoryRoot = [System.IO.Path]::GetFullPath($RepositoryRoot).TrimEnd('\', '/')
+if (-not (Test-Path -LiteralPath $repositoryRoot -PathType Container)) {
+    throw "Repository root does not exist: $repositoryRoot"
+}
 $requiredFiles = @(
     'bootstrap.ps1'
     'bootstrap.example.json'

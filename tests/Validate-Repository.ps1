@@ -71,10 +71,17 @@ $requiredPaths = @(
     'resources\strings.zh-CN.json'
     'bootstrap.example.json'
     'tests\Get-RuntimeFingerprint.ps1'
+    'tests\New-ReleaseBundle.ps1'
     'tests\Invoke-StaticAnalysis.ps1'
+    'tests\acceptance\AcceptanceTools.psm1'
+    'tests\acceptance\README.md'
+    'tests\acceptance\Compare-StableStatuses.ps1'
+    'tests\acceptance\evidence.schema.json'
+    'tests\acceptance\gateway\fault_proxy.py'
     'PSScriptAnalyzerSettings.psd1'
     'docs\index.md'
     '.github\workflows\ci.yml'
+    '.github\workflows\candidate.yml'
     '.github\workflows\release.yml'
     'AGENTS.md'
     'README.md'
@@ -84,6 +91,26 @@ $requiredPaths = @(
 )
 foreach ($requiredPath in $requiredPaths) {
     Test-RequiredPath -RelativePath $requiredPath
+}
+
+$bundleScriptPath = Join-Path -Path $repositoryRoot -ChildPath 'tests\New-ReleaseBundle.ps1'
+if (Test-Path -LiteralPath $bundleScriptPath -PathType Leaf) {
+    $bundleCheckRoot = Join-Path ([IO.Path]::GetTempPath()) ('w11b-validator-' + [Guid]::NewGuid().ToString('N'))
+    try {
+        $firstBundle = & $bundleScriptPath -Version v0.1.0 -OutputDirectory (Join-Path $bundleCheckRoot 'first')
+        $secondBundle = & $bundleScriptPath -Version v0.1.0 -OutputDirectory (Join-Path $bundleCheckRoot 'second')
+        if ($firstBundle.ArchiveSha256 -cnotmatch '^[0-9a-f]{64}$' -or
+            $firstBundle.ArchiveSha256 -cne $secondBundle.ArchiveSha256 -or
+            -not [Linq.Enumerable]::SequenceEqual([byte[]][IO.File]::ReadAllBytes($firstBundle.ArchivePath), [byte[]][IO.File]::ReadAllBytes($secondBundle.ArchivePath))) {
+            Add-ValidationFailure 'Release bundle builder is not byte-for-byte deterministic.'
+        }
+    }
+    catch {
+        Add-ValidationFailure "Release bundle validation failed: $($_.Exception.Message)"
+    }
+    finally {
+        if (Test-Path -LiteralPath $bundleCheckRoot) { [IO.Directory]::Delete($bundleCheckRoot, $true) }
+    }
 }
 
 $fingerprintScriptPath = Join-Path -Path $repositoryRoot -ChildPath 'tests\Get-RuntimeFingerprint.ps1'
@@ -125,6 +152,9 @@ if (Test-Path -LiteralPath $readmePath -PathType Leaf) {
         'if (Test-Path -LiteralPath $zip) {'
         '$zipItem = Get-Item -LiteralPath $zip -Force -ErrorAction Stop'
         '$actual = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash'
+        '$gh = Get-Command gh.exe -ErrorAction SilentlyContinue'
+        '& $gh.Source attestation verify $zip --repo $repository'
+        'if ($LASTEXITCODE -ne 0) { throw ''Release ZIP build provenance verification failed.'' }'
         '$destination = Join-Path $downloadRoot ''expanded'''
     )
     foreach ($fragment in $requiredSecureBootstrapFragments) {
@@ -159,6 +189,32 @@ if (Test-Path -LiteralPath $ciWorkflowPath -PathType Leaf) {
     if ($ciWorkflowText.IndexOf('Import-Module Pester -RequiredVersion 5.7.1 -Force -ErrorAction Stop', [StringComparison]::Ordinal) -lt 0) {
         Add-ValidationFailure 'PR CI must explicitly import the reviewed Pester version before running tests.'
     }
+    foreach ($fragment in @('acceptance-tools:', 'python3 -B -m unittest discover', 'bash -n tests/acceptance/gateway/configure_gateway.sh')) {
+        if ($ciWorkflowText.IndexOf($fragment, [StringComparison]::Ordinal) -lt 0) {
+            Add-ValidationFailure "PR CI is missing acceptance-tool validation: $fragment"
+        }
+    }
+    if ($ciWorkflowText -match 'actions/attest@') {
+        Add-ValidationFailure 'PR CI must not create an artifact attestation.'
+    }
+}
+
+$candidateWorkflowPath = Join-Path -Path $repositoryRoot -ChildPath '.github\workflows\candidate.yml'
+if (Test-Path -LiteralPath $candidateWorkflowPath -PathType Leaf) {
+    $candidateWorkflowText = Get-Content -LiteralPath $candidateWorkflowPath -Raw -Encoding UTF8
+    foreach ($fragment in @(
+        'workflow_dispatch:', "'refs/heads/main'", 'tests/New-ReleaseBundle.ps1',
+        'Consecutive candidate builds are not byte-for-byte deterministic.',
+        'actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6',
+        'id-token: write', 'attestations: write', 'artifact-metadata: write', 'retention-days: 30'
+    )) {
+        if ($candidateWorkflowText.IndexOf($fragment, [StringComparison]::Ordinal) -lt 0) {
+            Add-ValidationFailure "Candidate workflow is missing required policy: $fragment"
+        }
+    }
+    if ($candidateWorkflowText -match '(?m)^\s*push\s*:|(?m)^\s*pull_request\s*:|(?m)^\s*contents:\s*write\s*$') {
+        Add-ValidationFailure 'Candidate workflow must be manual-only and must not write repository contents.'
+    }
 }
 
 $releaseWorkflowPath = Join-Path -Path $repositoryRoot -ChildPath '.github\workflows\release.yml'
@@ -172,14 +228,17 @@ if (Test-Path -LiteralPath $releaseWorkflowPath -PathType Leaf) {
         'BUILD_COMMIT: ${{ needs.build.outputs.commit-sha }}'
         'tests/Invoke-StaticAnalysis.ps1'
         "'Runtime fingerprint'"
+        "'Accepted archive SHA-256'"
+        "'Candidate workflow run URL'"
+        "'Acceptance toolkit commit'"
+        "'Attestation verification'"
+        "'Test date range'"
         '''VM-{0:d3}'' -f $_'
-        "'tests', 'docs', 'README.md'"
-        "'resources', '.github',"
-        "'SECURITY.md', 'LICENSE', '.gitignore', 'PSScriptAnalyzerSettings.psd1'"
-        "'PSScriptAnalyzerSettings.psd1'"
         'Get-RuntimeFingerprint.ps1'
+        'tests/New-ReleaseBundle.ps1'
+        '-ExpectedArchiveSha256'
+        'actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6'
         'Import-Module Pester -RequiredVersion 5.7.1 -Force -ErrorAction Stop'
-        '(Join-Path $archiveCheck ''tests\Validate-Repository.ps1'')'
         'releases/tags/$version'
         'releases/$ReleaseId'
         'releases/$releaseId'
@@ -617,6 +676,7 @@ if ($null -ne $schema) {
 $zhDirectory = Join-Path -Path $repositoryRoot -ChildPath 'docs\zh-CN'
 $enDirectory = Join-Path -Path $repositoryRoot -ChildPath 'docs\en'
 $expectedDocNames = @(
+    'acceptance.md'
     'adding-software.md'
     'architecture.md'
     'releasing.md'
@@ -750,7 +810,8 @@ foreach ($file in $allFiles) {
         $file.Name -like 'id_rsa*' -or
         $file.Name -like '*credential*' -or
         $file.Name -like '*subscription*' -or
-        $file.Name -like '*access-token*') {
+        $file.Name -like '*access-token*' -or
+        $file.Extension -in @('.pyc', '.pyo')) {
         Add-ValidationFailure "Potential secret-bearing file is present: $relative"
     }
 }

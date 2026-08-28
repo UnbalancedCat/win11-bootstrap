@@ -39,3 +39,9 @@ Provider 返回结构化结果而不是直接退出；入口统一计算退出�
 入口不会把用户路径拼成 PowerShell 命令。它在 UAC 前解析配置、限制参数大小，并把运行所需文件名、长度和 SHA-256 固定到 loader 清单。提权后的 loader 只接受该固定清单，在 `%ProgramData%\Win11Bootstrap\Runtime\<随机 GUID>` 中创建仅 Administrators 和 SYSTEM 可访问的非重解析点快照，复制前后都复验摘要，再由同一个已提升令牌启动快照中的入口。源文件在 UAC 等待期间被修改、既有 ProgramData 目录的 owner/DACL 不符合精确策略或安全清理失败时都会失败关闭；快照不会作为断点或缓存复用。
 
 真实运行日志使用受相同 owner/DACL 约束的 `%ProgramData%\Win11Bootstrap\Logs`，以随机 GUID 名称和原子 `CreateNew` 创建；`WhatIf` 不创建日志。所有临时环境变量与 WinGet 代理能力在 `finally` 中恢复。脚本不修改持久 WinHTTP 代理、不存储代理凭据、不自动重启。
+
+## 发布与验收边界
+
+`tests/New-ReleaseBundle.ps1` 是候选 workflow 与标签 Release workflow 共用的唯一打包器。稳定、无压缩的 ZIP 只包含公开入口、示例配置、运行时模块/目录/schema/resources、选定用户文档以及仓库政策与许可证文件。它按序数排序条目，固定时间戳和属性，随后复核解压白名单与运行时指纹。测试、workflow、agent 指引、验收记录、发布说明、缓存、日志、二进制和嵌套归档都不进入运行 ZIP。
+
+`tests/acceptance/` 是只存在于仓库中的黑盒夹具：调用解压候选、采集脱敏证据、比较系统观测值、验证生产安装器信任边界，并提供隔离 Gateway 故障代理。`bootstrap.ps1` 不导入它，发布包也不包含它。候选与 Release 调用同一构建器；provenance 绑定精确 ZIP，验收记录再把该 ZIP 摘要绑定到已测试的运行时指纹。

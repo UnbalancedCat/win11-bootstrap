@@ -58,3 +58,23 @@ jobs:
           name: pester-results
           path: TestResults/
           if-no-files-found: ignore
+
+  acceptance-tools:
+    name: acceptance-tools
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate Gateway tooling
+        shell: bash
+        run: |
+          python3 -c "import ast,pathlib; ast.parse(pathlib.Path('tests/acceptance/gateway/fault_proxy.py').read_text(encoding='utf-8'))"
+          python3 -B -m unittest discover -s tests/acceptance/gateway -p 'test_*.py'
+          bash -n tests/acceptance/gateway/configure_gateway.sh

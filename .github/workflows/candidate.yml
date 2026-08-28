@@ -1,0 +1,74 @@
+name: Candidate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  candidate:
+    name: candidate
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+
+    steps:
+      - name: Require the main branch
+        shell: powershell
+        run: |
+          if ($env:GITHUB_REF -cne 'refs/heads/main') {
+            throw 'Candidate archives may be built only from refs/heads/main.'
+          }
+
+      - name: Check out candidate revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate repository
+        shell: powershell
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/Validate-Repository.ps1
+
+      - name: Build the deterministic candidate twice
+        id: bundle
+        shell: powershell
+        run: |
+          $first = & tests/New-ReleaseBundle.ps1 -Version v0.1.0 -OutputDirectory candidate-first
+          $second = & tests/New-ReleaseBundle.ps1 -Version v0.1.0 -OutputDirectory candidate-second
+          if ($first.ArchiveSha256 -cne $second.ArchiveSha256) {
+            throw 'Consecutive candidate builds are not byte-for-byte deterministic.'
+          }
+          $firstBytes = [IO.File]::ReadAllBytes($first.ArchivePath)
+          $secondBytes = [IO.File]::ReadAllBytes($second.ArchivePath)
+          if (-not [Linq.Enumerable]::SequenceEqual([byte[]]$firstBytes, [byte[]]$secondBytes)) {
+            throw 'Candidate archive bytes differ despite matching metadata.'
+          }
+          New-Item -ItemType Directory -Path candidate-artifact | Out-Null
+          Copy-Item -LiteralPath $first.ArchivePath, $first.ChecksumPath -Destination candidate-artifact
+          "archive=$(Resolve-Path $first.ArchivePath)" | Out-File $env:GITHUB_OUTPUT -Encoding ascii -Append
+          "sha256=$($first.ArchiveSha256)" | Out-File $env:GITHUB_OUTPUT -Encoding ascii -Append
+          "fingerprint=$($first.RuntimeFingerprint)" | Out-File $env:GITHUB_OUTPUT -Encoding ascii -Append
+          @(
+            '### v0.1.0 candidate'
+            "- Commit: ``$env:GITHUB_SHA``"
+            "- Runtime fingerprint: ``$($first.RuntimeFingerprint)``"
+            "- Archive SHA-256: ``$($first.ArchiveSha256)``"
+          ) | Out-File $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+      - name: Attest candidate archive
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.0.0
+        with:
+          subject-path: ${{ steps.bundle.outputs.archive }}
+
+      - name: Upload candidate archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: win11-bootstrap-v0.1.0-candidate-${{ github.sha }}
+          path: candidate-artifact/
+          if-no-files-found: error
+          retention-days: 30
