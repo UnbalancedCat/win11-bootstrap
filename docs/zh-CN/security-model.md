@@ -42,6 +42,6 @@ RealVNC v8+ 与 NoMachine v10+ 是策略冲突，任何自动卸载或降级都�
 
 ## 候选 provenance 与私有证据
 
-候选 ZIP 和 Release ZIP 都由严格文本白名单确定性构建。构建器拒绝危险扩展名、可执行文件/归档/磁盘镜像魔数、含 NUL 的输入、备用数据流、路径逃逸和重解析点；它会自行解压产物，比较精确条目集合并重新计算运行时指纹。GitHub build provenance 由固定完整 commit SHA 的 attestation Action 生成，其 job 写权限仅限 OIDC 与 attestation。下载者必须同时验证 SHA-256 与 `gh attestation verify`，两者不能互相替代。
+候选 ZIP 和 Release ZIP 都由严格文本白名单确定性构建。构建器拒绝危险扩展名、可执行文件/归档/磁盘镜像魔数、含 NUL 或非 UTF-8 的输入、备用数据流、路径逃逸和重解析点；通过验证的文本统一为无 BOM UTF-8 与 LF 换行。它会自行解压产物，比较精确条目集合并按相同文本规范重新计算运行时指纹。GitHub build provenance 由固定完整 commit SHA 的 attestation Action 生成，其 job 写权限仅限 OIDC 与 attestation。下载者必须同时验证 SHA-256 与 `gh attestation verify`，两者不能互相替代。
 
 验收输出保存在仓库外并采用 create-new。夹具只保存命令摘要的哈希，stdout/stderr 落盘前会脱敏 URI user info 和常见凭据形式，并拒绝含疑似秘密的证据清单。Gateway 日志只含时间、实验客户端、目标主机/端口、事件和字节数，不做 TLS MITM。自动脱敏只是防线，不代表可以公开；Issue #1 的每段内容都须人工复核，任何秘密暴露都会使该证据组作废并被销毁。

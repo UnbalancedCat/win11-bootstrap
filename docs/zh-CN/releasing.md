@@ -16,7 +16,7 @@
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Get-RuntimeFingerprint.ps1
 ```
 
-把输出的完整 `sha256:<64 个小写十六进制字符>` 写入验收文件的 `Runtime fingerprint` 字段。该指纹按序覆盖 `bootstrap.ps1`、`bootstrap.example.json` 以及 `src/`、`catalog/`、`schemas/`、`resources/` 下的全部文件。上述任一文件发生变化都会使既有 VM 证据失效；必须生成新指纹并重新执行 11 个稳定场景 ID。发布 ZIP 解压后的指纹必须与验收记录完全相同。
+把输出的完整 `sha256:<64 个小写十六进制字符>` 写入验收文件的 `Runtime fingerprint` 字段。该指纹按序覆盖 `bootstrap.ps1`、`bootstrap.example.json` 以及 `src/`、`catalog/`、`schemas/`、`resources/` 下的全部文件；计算前严格按 UTF-8 解码，并规范为无 BOM、LF 换行，避免 Git 的本地换行设置改变身份。除 BOM/换行表示外，上述任一文件发生变化都会使既有 VM 证据失效；必须生成新指纹并重新执行 11 个稳定场景 ID。发布 ZIP 解压后的指纹必须与验收记录完全相同，ZIP SHA-256 继续约束精确归档字节。
 
 ## CI 与标签
 

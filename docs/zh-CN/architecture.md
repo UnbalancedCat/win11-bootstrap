@@ -42,6 +42,6 @@ Provider 返回结构化结果而不是直接退出；入口统一计算退出�
 
 ## 发布与验收边界
 
-`tests/New-ReleaseBundle.ps1` 是候选 workflow 与标签 Release workflow 共用的唯一打包器。稳定、无压缩的 ZIP 只包含公开入口、示例配置、运行时模块/目录/schema/resources、选定用户文档以及仓库政策与许可证文件。它按序数排序条目，固定时间戳和属性，随后复核解压白名单与运行时指纹。测试、workflow、agent 指引、验收记录、发布说明、缓存、日志、二进制和嵌套归档都不进入运行 ZIP。
+`tests/New-ReleaseBundle.ps1` 是候选 workflow 与标签 Release workflow 共用的唯一打包器。稳定、无压缩的 ZIP 只包含公开入口、示例配置、运行时模块/目录/schema/resources、选定用户文档以及仓库政策与许可证文件。它把所有文本严格解码为 UTF-8，再统一写成无 BOM、LF 换行的字节，按序数排序条目，固定时间戳和属性，随后复核解压白名单与规范化运行时指纹；因此 Git 的换行设置不能改变产物。测试、workflow、agent 指引、验收记录、发布说明、缓存、日志、二进制和嵌套归档都不进入运行 ZIP。
 
 `tests/acceptance/` 是只存在于仓库中的黑盒夹具：调用解压候选、采集脱敏证据、比较系统观测值、验证生产安装器信任边界，并提供隔离 Gateway 故障代理。`bootstrap.ps1` 不导入它，发布包也不包含它。候选与 Release 调用同一构建器；provenance 绑定精确 ZIP，验收记录再把该 ZIP 摘要绑定到已测试的运行时指纹。

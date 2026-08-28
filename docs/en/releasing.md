@@ -16,7 +16,7 @@ After freezing the candidate to be tested, run this command from the repository 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Get-RuntimeFingerprint.ps1
 ```
 
-Copy the complete `sha256:<64 lowercase hexadecimal characters>` output into the acceptance file's `Runtime fingerprint` field. The fingerprint canonically covers `bootstrap.ps1`, `bootstrap.example.json`, and every file under `src/`, `catalog/`, `schemas/`, and `resources/`. A change to any covered file invalidates existing VM evidence; generate a new fingerprint and rerun all 11 stable scenario IDs. The fingerprint computed from the extracted Release ZIP must exactly match the acceptance record.
+Copy the complete `sha256:<64 lowercase hexadecimal characters>` output into the acceptance file's `Runtime fingerprint` field. The fingerprint covers `bootstrap.ps1`, `bootstrap.example.json`, and every file under `src/`, `catalog/`, `schemas/`, and `resources/` in ordinal path order. Inputs are strictly decoded as UTF-8 and canonicalized to BOM-free LF text so a local Git line-ending setting cannot change their identity. Apart from BOM or line-ending representation, a change to any covered file invalidates existing VM evidence; generate a new fingerprint and rerun all 11 stable scenario IDs. The fingerprint computed from the extracted Release ZIP must exactly match the acceptance record; the ZIP SHA-256 still binds the exact archive bytes.
 
 ## CI and tags
 
