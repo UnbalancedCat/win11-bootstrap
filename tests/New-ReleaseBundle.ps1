@@ -42,6 +42,33 @@ $forbiddenExtensions = @(
     '.pfx', '.p12', '.pem', '.key', '.log', '.tmp', '.cache'
 )
 
+function Get-CanonicalTextBytes {
+    param(
+        [Parameter(Mandatory = $true)][string]$LiteralPath,
+        [Parameter(Mandatory = $true)][string]$DisplayPath
+    )
+
+    $bytes = [System.IO.File]::ReadAllBytes($LiteralPath)
+    $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
+    try {
+        $text = $strictUtf8.GetString($bytes)
+    }
+    catch [System.Text.DecoderFallbackException] {
+        throw "Release input is not valid UTF-8: $DisplayPath"
+    }
+
+    if ($text.Length -gt 0 -and $text[0] -eq [char]0xfeff) {
+        $text = $text.Substring(1)
+    }
+    if ($text.IndexOf([char]0) -ge 0) {
+        throw "Release input contains NUL text: $DisplayPath"
+    }
+
+    $canonicalText = $text.Replace("`r`n", "`n").Replace("`r", "`n")
+    $utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
+    return ,$utf8WithoutBom.GetBytes($canonicalText)
+}
+
 function Get-Sha256Hex {
     param([Parameter(Mandatory = $true)][string]$LiteralPath)
 
@@ -114,8 +141,12 @@ foreach ($relativeDirectory in $requiredDirectories) {
 
 $entryPaths = [string[]]$entriesByPath.Keys
 [Array]::Sort($entryPaths, [StringComparer]::Ordinal)
+$canonicalBytesByPath = @{}
 foreach ($entryPath in $entryPaths) {
     Assert-PlainRuntimeFile -File $entriesByPath[$entryPath]
+    $canonicalBytesByPath[$entryPath] = Get-CanonicalTextBytes `
+        -LiteralPath $entriesByPath[$entryPath].FullName `
+        -DisplayPath $entryPath
 }
 
 [void][System.IO.Directory]::CreateDirectory($outputDirectoryPath)
@@ -140,18 +171,13 @@ try {
                 $entry = $archive.CreateEntry($entryPath, [System.IO.Compression.CompressionLevel]::NoCompression)
                 $entry.LastWriteTime = $fixedTimestamp
                 $entry.ExternalAttributes = 0
-                $inputStream = [System.IO.File]::OpenRead($entriesByPath[$entryPath].FullName)
+                $canonicalBytes = [byte[]]$canonicalBytesByPath[$entryPath]
+                $outputStream = $entry.Open()
                 try {
-                    $outputStream = $entry.Open()
-                    try {
-                        $inputStream.CopyTo($outputStream)
-                    }
-                    finally {
-                        $outputStream.Dispose()
-                    }
+                    $outputStream.Write($canonicalBytes, 0, $canonicalBytes.Length)
                 }
                 finally {
-                    $inputStream.Dispose()
+                    $outputStream.Dispose()
                 }
             }
         }
@@ -181,6 +207,8 @@ try {
     }
 
     $fingerprintScript = Join-Path -Path $PSScriptRoot -ChildPath 'Get-RuntimeFingerprint.ps1'
+    # The fingerprint helper canonicalizes the source checkout in the same way
+    # as the archive writer, so Git line-ending settings cannot alter identity.
     $sourceFingerprint = (& $fingerprintScript -RepositoryRoot $repositoryRootPath | Select-Object -Last 1)
     $extractedFingerprint = (& $fingerprintScript -RepositoryRoot $temporaryDirectory | Select-Object -Last 1)
     if ($sourceFingerprint -cne $extractedFingerprint) {
