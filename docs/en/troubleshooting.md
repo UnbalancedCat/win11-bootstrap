@@ -8,6 +8,10 @@ Verify that JSON contains only allowed properties, application keys exist in the
 
 The tool checks WinGet, re-registers/resets App Installer, and can install `Microsoft.WinGet.Client` to run `Repair-WinGetPackageManager -AllUsers`. The Clash direct-download fallback remains fail-closed in v0.1 because complete pinned-hash and signer metadata is not yet available. If Store, PSGallery, and WinGet are all unreachable, repair networking or manually install and configure Clash from an official trusted channel, then rerun. Do not download a purported WinGet installer from an unknown site.
 
+## Self-elevation fails
+
+Start the script from an ordinary, non-administrator Windows PowerShell and accept its one UAC prompt. Do not bypass this boundary by launching `bootstrap.ps1` from an already elevated console. UAC cancellation or an ordinary handoff failure returns 20; PID, digest, or envelope-shape rejection returns 30. `WhatIf` creates no log, and a real run creates `%ProgramData%\Win11Bootstrap\Logs` only after the secure snapshot entry starts. On an informal VM, run `tests\acceptance\Invoke-SelfElevationProbe.ps1 -CandidateRoot <expanded-candidate>` from the matching toolkit commit. It selects and skips the same application, so no install provider runs, but it exercises one real UAC and requires exit 0. If it fails, use an administrator PowerShell only to inspect whether `Runtime`/`Logs` exist under `%ProgramData%\Win11Bootstrap` and their restricted-directory timestamps. Do not publish directory contents or continue a real installation by starting as administrator.
+
 ## `NeedsProxy`
 
 Open Clash Verge Rev, add your subscription, and confirm that it can reach the public host shown in the failure. Rerun the same selection. A listening port alone is insufficient; the tool validates actual HTTPS connectivity.

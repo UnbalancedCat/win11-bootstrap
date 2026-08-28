@@ -813,6 +813,349 @@ function Assert-BootstrapRuntimeSnapshotManifest {
     }
 }
 
+function Get-ByteArraySha256Hex {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [byte[]]$Bytes
+    )
+
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = $sha256.ComputeHash($Bytes)
+        return ([BitConverter]::ToString($hash)).Replace('-', '')
+    }
+    finally {
+        $sha256.Dispose()
+    }
+}
+
+function ConvertTo-BootstrapElevationEnvelopeBytes {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidatePattern('^[a-f0-9]{32}$')]
+        [string]$InvocationId,
+
+        [Parameter(Mandatory = $true)]
+        [string]$OptionPayload,
+
+        [Parameter(Mandatory = $true)]
+        [string]$LoaderScript
+    )
+
+    if ([string]::IsNullOrWhiteSpace($OptionPayload) -or $OptionPayload.Length -gt 24576) {
+        throw [System.Security.SecurityException]::new('The elevation option payload is missing or oversized.')
+    }
+    if ([string]::IsNullOrWhiteSpace($LoaderScript) -or $LoaderScript.Length -gt 65536) {
+        throw [System.Security.SecurityException]::new('The elevation loader is missing or oversized.')
+    }
+
+    $envelope = [ordered]@{
+        SchemaVersion = 1
+        InvocationId = $InvocationId
+        OptionPayload = $OptionPayload
+        LoaderScript = $LoaderScript
+    }
+    $json = ConvertTo-Json -InputObject $envelope -Compress -Depth 4
+    $bytes = [Text.Encoding]::UTF8.GetBytes($json)
+    if ($bytes.Length -gt 131072) {
+        throw [System.Security.SecurityException]::new('The elevation handoff envelope is oversized.')
+    }
+    return ,$bytes
+}
+
+function Initialize-BootstrapPipeNativeMethods {
+    [CmdletBinding()]
+    param()
+
+    if ($null -ne ('Win11Bootstrap.PipeNativeMethods' -as [type])) {
+        return
+    }
+
+    $typeDefinition = @'
+using System;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
+namespace Win11Bootstrap {
+    public static class PipeNativeMethods {
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool GetNamedPipeClientProcessId(
+            SafePipeHandle pipe,
+            out uint clientProcessId);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool GetNamedPipeServerProcessId(
+            SafePipeHandle pipe,
+            out uint serverProcessId);
+    }
+}
+'@
+    Add-Type -TypeDefinition $typeDefinition -ErrorAction Stop
+}
+
+function New-BootstrapElevationPipeServer {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidatePattern('^win11-bootstrap-[a-f0-9]{32}$')]
+        [string]$PipeName
+    )
+
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    if ($null -eq $identity.User) {
+        throw [System.Security.SecurityException]::new('The current user SID could not be resolved for elevation handoff.')
+    }
+
+    $security = New-Object IO.Pipes.PipeSecurity
+    $security.SetOwner($identity.User)
+    $security.SetAccessRuleProtection($true, $false)
+    $networkSid = New-Object Security.Principal.SecurityIdentifier(
+        [Security.Principal.WellKnownSidType]::NetworkSid,
+        $null
+    )
+    $networkRule = [IO.Pipes.PipeAccessRule]::new(
+        $networkSid,
+        [IO.Pipes.PipeAccessRights]::FullControl,
+        [Security.AccessControl.AccessControlType]::Deny
+    )
+    [void]$security.AddAccessRule($networkRule)
+    foreach ($sid in @(
+        $identity.User,
+        (New-Object Security.Principal.SecurityIdentifier([Security.Principal.WellKnownSidType]::LocalSystemSid, $null))
+    )) {
+        $rule = [IO.Pipes.PipeAccessRule]::new(
+            $sid,
+            [IO.Pipes.PipeAccessRights]::FullControl,
+            [Security.AccessControl.AccessControlType]::Allow
+        )
+        [void]$security.AddAccessRule($rule)
+    }
+
+    $options = [IO.Pipes.PipeOptions]::Asynchronous -bor [IO.Pipes.PipeOptions]::WriteThrough
+    return [IO.Pipes.NamedPipeServerStream]::new(
+        $PipeName,
+        [IO.Pipes.PipeDirection]::Out,
+        1,
+        [IO.Pipes.PipeTransmissionMode]::Byte,
+        $options,
+        65536,
+        65536,
+        $security,
+        [IO.HandleInheritability]::None
+    )
+}
+
+function Send-BootstrapElevationEnvelope {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [IO.Pipes.NamedPipeServerStream]$Server,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateRange(1, 2147483647)]
+        [int]$ExpectedClientProcessId,
+
+        [Parameter(Mandatory = $true)]
+        [byte[]]$EnvelopeBytes,
+
+        [Parameter()]
+        [ValidateRange(1000, 120000)]
+        [int]$TimeoutMilliseconds = 30000
+    )
+
+    $asyncResult = $Server.BeginWaitForConnection($null, $null)
+    try {
+        if (-not $asyncResult.AsyncWaitHandle.WaitOne($TimeoutMilliseconds)) {
+            throw [TimeoutException]::new('The elevated process did not connect to the secure handoff pipe in time.')
+        }
+        $Server.EndWaitForConnection($asyncResult)
+    }
+    finally {
+        $asyncResult.AsyncWaitHandle.Close()
+    }
+
+    Initialize-BootstrapPipeNativeMethods
+    [uint32]$clientProcessId = 0
+    if (-not [Win11Bootstrap.PipeNativeMethods]::GetNamedPipeClientProcessId(
+            $Server.SafePipeHandle,
+            [ref]$clientProcessId)) {
+        $nativeError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        throw [ComponentModel.Win32Exception]::new($nativeError, 'The elevation handoff client PID could not be verified.')
+    }
+    if ([int]$clientProcessId -ne $ExpectedClientProcessId) {
+        throw [System.Security.SecurityException]::new('An unexpected process connected to the elevation handoff pipe.')
+    }
+
+    $Server.Write($EnvelopeBytes, 0, $EnvelopeBytes.Length)
+    $Server.Flush()
+}
+
+function Get-BootstrapElevationPipeClientScript {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidatePattern('^win11-bootstrap-[a-f0-9]{32}$')]
+        [string]$PipeName,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateRange(1, 2147483647)]
+        [int]$ExpectedServerProcessId,
+
+        [Parameter(Mandatory = $true)]
+        [ValidatePattern('^[a-f0-9]{32}$')]
+        [string]$InvocationId,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateRange(1, 131072)]
+        [int]$ExpectedLength,
+
+        [Parameter(Mandatory = $true)]
+        [ValidatePattern('^[A-Fa-f0-9]{64}$')]
+        [string]$ExpectedSha256
+    )
+
+    $template = @'
+#requires -Version 5.1
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+Set-StrictMode -Version 2.0
+$pipe = $null
+$environmentName = $null
+try {
+    $trustedModuleRoot = Join-Path $PSHOME 'Modules'
+    if (-not [IO.Directory]::Exists($trustedModuleRoot)) {
+        throw [Security.SecurityException]::new('The trusted PowerShell module root is unavailable.')
+    }
+    $env:PSModulePath = $trustedModuleRoot
+
+    if ($null -eq ('Win11Bootstrap.PipeNativeMethods' -as [type])) {
+        $nativeType = @"
+using System;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+namespace Win11Bootstrap {
+    public static class PipeNativeMethods {
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool GetNamedPipeServerProcessId(SafePipeHandle pipe, out uint serverProcessId);
+    }
+}
+"@
+        Microsoft.PowerShell.Utility\Add-Type -TypeDefinition $nativeType -ErrorAction Stop
+    }
+
+    $pipe = [IO.Pipes.NamedPipeClientStream]::new(
+        '.',
+        '__PIPE_NAME__',
+        [IO.Pipes.PipeDirection]::In,
+        [IO.Pipes.PipeOptions]::Asynchronous,
+        [Security.Principal.TokenImpersonationLevel]::Impersonation
+    )
+    $pipe.Connect(30000)
+
+    [uint32]$serverProcessId = 0
+    if (-not [Win11Bootstrap.PipeNativeMethods]::GetNamedPipeServerProcessId(
+            $pipe.SafePipeHandle,
+            [ref]$serverProcessId)) {
+        $nativeError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        throw [ComponentModel.Win32Exception]::new($nativeError, 'The elevation handoff server PID could not be verified.')
+    }
+    if ([int]$serverProcessId -ne __PARENT_PROCESS_ID__) {
+        throw [Security.SecurityException]::new('The elevation handoff pipe server is not the requesting process.')
+    }
+
+    $bytes = New-Object byte[] __EXPECTED_LENGTH__
+    $offset = 0
+    while ($offset -lt $bytes.Length) {
+        $read = $pipe.Read($bytes, $offset, $bytes.Length - $offset)
+        if ($read -le 0) {
+            throw [IO.EndOfStreamException]::new('The elevation handoff ended before the complete envelope was received.')
+        }
+        $offset += $read
+    }
+    if ($pipe.ReadByte() -ne -1) {
+        throw [Security.SecurityException]::new('The elevation handoff contained trailing data.')
+    }
+
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $actualHash = ([BitConverter]::ToString($sha256.ComputeHash($bytes))).Replace('-', '')
+    }
+    finally {
+        $sha256.Dispose()
+    }
+    if (-not [string]::Equals($actualHash, '__EXPECTED_SHA256__', [StringComparison]::OrdinalIgnoreCase)) {
+        throw [Security.SecurityException]::new('The elevation handoff envelope hash is invalid.')
+    }
+
+    try {
+        $strictUtf8 = New-Object Text.UTF8Encoding($false, $true)
+        $envelope = Microsoft.PowerShell.Utility\ConvertFrom-Json -InputObject $strictUtf8.GetString($bytes) -ErrorAction Stop
+    }
+    catch {
+        throw [Security.SecurityException]::new('The elevation handoff envelope encoding or JSON is invalid.')
+    }
+    $properties = @($envelope.PSObject.Properties.Name)
+    $allowed = @('SchemaVersion', 'InvocationId', 'OptionPayload', 'LoaderScript')
+    if ($properties.Count -ne $allowed.Count -or @($properties | Where-Object { $_ -notin $allowed }).Count -ne 0 -or
+        [int]$envelope.SchemaVersion -ne 1 -or [string]$envelope.InvocationId -cne '__INVOCATION_ID__' -or
+        [string]::IsNullOrWhiteSpace([string]$envelope.OptionPayload) -or ([string]$envelope.OptionPayload).Length -gt 24576 -or
+        [string]::IsNullOrWhiteSpace([string]$envelope.LoaderScript) -or ([string]$envelope.LoaderScript).Length -gt 65536) {
+        throw [Security.SecurityException]::new('The elevation handoff envelope is invalid.')
+    }
+
+    try {
+        $optionBytes = [Convert]::FromBase64String([string]$envelope.OptionPayload)
+    }
+    catch {
+        throw [Security.SecurityException]::new('The elevation option payload encoding is invalid.')
+    }
+    if ($optionBytes.Length -gt 16384) {
+        throw [Security.SecurityException]::new('The elevation option payload is oversized.')
+    }
+    $environmentName = 'WIN11_BOOTSTRAP_ELEVATION_{0}' -f '__INVOCATION_ID__'.ToUpperInvariant()
+    [Environment]::SetEnvironmentVariable($environmentName, [string]$envelope.OptionPayload, 'Process')
+
+    $loaderOutput = @(& ([Management.Automation.ScriptBlock]::Create([string]$envelope.LoaderScript)))
+    if ($loaderOutput.Count -eq 0) {
+        throw [InvalidOperationException]::new('The secure elevation loader did not return an exit code.')
+    }
+    $exitCode = [int]$loaderOutput[-1]
+    if ($exitCode -notin @(0, 10, 20, 30, 64)) {
+        throw [InvalidOperationException]::new('The secure elevation loader returned an undocumented exit code.')
+    }
+    exit $exitCode
+}
+catch [Security.SecurityException] {
+    [Console]::Error.WriteLine('Secure elevation handoff rejected unsafe state: {0}' -f $_.Exception.Message)
+    exit 30
+}
+catch {
+    [Console]::Error.WriteLine('Secure elevation handoff failed: {0}' -f $_.Exception.Message)
+    exit 20
+}
+finally {
+    if ($environmentName) {
+        [Environment]::SetEnvironmentVariable($environmentName, $null, 'Process')
+    }
+    if ($null -ne $pipe) {
+        $pipe.Dispose()
+    }
+}
+'@
+
+    $result = $template.Replace('__PIPE_NAME__', $PipeName)
+    $result = $result.Replace('__PARENT_PROCESS_ID__', [string]$ExpectedServerProcessId)
+    $result = $result.Replace('__INVOCATION_ID__', $InvocationId)
+    $result = $result.Replace('__EXPECTED_LENGTH__', [string]$ExpectedLength)
+    $result = $result.Replace('__EXPECTED_SHA256__', $ExpectedSha256.ToUpperInvariant())
+    return $result
+}
+
 function Get-BootstrapElevationLoaderScript {
     [CmdletBinding()]
     param(
@@ -917,13 +1260,14 @@ function Remove-LockedSnapshot([string]$Path, [string]$RuntimeRoot) {
     Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction Stop
 }
 
-$manifestText = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__MANIFEST_BASE64__'))
-$manifest = ConvertFrom-Json -InputObject $manifestText -ErrorAction Stop
 $exitCode = 20
+$manifest = $null
 $stage = $null
 $runtimeRoot = $null
 $environmentName = $null
 try {
+    $manifestText = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__MANIFEST_BASE64__'))
+    $manifest = ConvertFrom-Json -InputObject $manifestText -ErrorAction Stop
     if ([int]$manifest.SchemaVersion -ne 1 -or [string]$manifest.PayloadId -notmatch '^[a-f0-9]{32}$') {
         throw [Security.SecurityException]::new('The secure runtime manifest header is invalid.')
     }
@@ -1040,7 +1384,7 @@ try {
     if ($null -eq $process) {
         throw [InvalidOperationException]::new('The secure runtime process could not be started.')
     }
-    $process.WaitForExit()
+    [void]$process.WaitForExit()
     $exitCode = [int]$process.ExitCode
 }
 catch [Security.SecurityException] {
@@ -1067,7 +1411,7 @@ finally {
         }
     }
 }
-exit $exitCode
+return $exitCode
 '@
     return $template.Replace('__MANIFEST_BASE64__', $manifestBase64)
 }
@@ -1156,7 +1500,7 @@ function ConvertTo-BootstrapEncodedLoaderArguments {
         $memory.Dispose()
     }
     $compressedBase64 = [Convert]::ToBase64String($compressed)
-    $wrapper = '$b=[Convert]::FromBase64String(''' + $compressedBase64 + ''');$m=New-Object IO.MemoryStream(,$b);$z=New-Object IO.Compression.GZipStream($m,[IO.Compression.CompressionMode]::Decompress);$r=New-Object IO.StreamReader($z,[Text.Encoding]::UTF8);$t=$r.ReadToEnd();$r.Dispose();$z.Dispose();$m.Dispose();&([Management.Automation.ScriptBlock]::Create($t))'
+    $wrapper = '$ErrorActionPreference=''Stop'';$m=$null;$z=$null;$r=$null;try{$b=[Convert]::FromBase64String(''' + $compressedBase64 + ''');$m=New-Object IO.MemoryStream(,$b);$z=New-Object IO.Compression.GZipStream($m,[IO.Compression.CompressionMode]::Decompress);$r=New-Object IO.StreamReader($z,[Text.Encoding]::UTF8);$t=$r.ReadToEnd();&([Management.Automation.ScriptBlock]::Create($t))}catch [Security.SecurityException]{[Console]::Error.WriteLine(''Secure elevation wrapper rejected unsafe state: {0}'' -f $_.Exception.Message);exit 30}catch{[Console]::Error.WriteLine(''Secure elevation wrapper failed: {0}'' -f $_.Exception.Message);exit 20}finally{if($r){$r.Dispose()}elseif($z){$z.Dispose()}elseif($m){$m.Dispose()}}'
     $encodedWrapper = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($wrapper))
     return '-NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand {0}' -f $encodedWrapper
 }
@@ -1212,36 +1556,58 @@ function Start-BootstrapElevated {
     $manifest = Get-BootstrapRuntimeSnapshotManifest -ScriptPath $ScriptPath
     Assert-BootstrapRuntimeSnapshotManifest -Manifest $manifest
     $id = [Guid]::NewGuid().ToString('N')
-    $environmentName = 'WIN11_BOOTSTRAP_ELEVATION_{0}' -f $id.ToUpperInvariant()
     $json = ConvertTo-Json -InputObject $payloadObject -Compress -Depth 5
     $payloadBytes = [Text.Encoding]::UTF8.GetBytes($json)
     if ($payloadBytes.Length -gt 16384) {
         throw [System.Security.SecurityException]::new('The elevation option payload is too large.')
     }
     $payload = [Convert]::ToBase64String($payloadBytes)
-    if (-not [string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($environmentName, 'Process'))) {
-        throw [System.Security.SecurityException]::new('The random elevation payload slot was unexpectedly occupied.')
+    $loaderScript = Get-BootstrapElevationLoaderScript -Manifest $manifest -PayloadId $id
+    [byte[]]$envelopeBytes = ConvertTo-BootstrapElevationEnvelopeBytes `
+        -InvocationId $id `
+        -OptionPayload $payload `
+        -LoaderScript $loaderScript
+    $envelopeHash = Get-ByteArraySha256Hex -Bytes $envelopeBytes
+    $pipeName = 'win11-bootstrap-{0}' -f ([Guid]::NewGuid().ToString('N'))
+    $parentProcessId = [Diagnostics.Process]::GetCurrentProcess().Id
+    $clientScript = Get-BootstrapElevationPipeClientScript `
+        -PipeName $pipeName `
+        -ExpectedServerProcessId $parentProcessId `
+        -InvocationId $id `
+        -ExpectedLength $envelopeBytes.Length `
+        -ExpectedSha256 $envelopeHash
+    $arguments = ConvertTo-BootstrapEncodedLoaderArguments -LoaderScript $clientScript
+    $powerShellPath = Get-TrustedSystemExecutablePath -RelativePath 'WindowsPowerShell\v1.0\powershell.exe'
+    if (($powerShellPath.Length + 1 + $arguments.Length) -gt 12000) {
+        throw [System.Security.SecurityException]::new('The secure elevation command exceeds the conservative ShellExecute command-line budget.')
     }
-    [Environment]::SetEnvironmentVariable($environmentName, $payload, 'Process')
+    $trustedWorkingDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::System)
+    if ([string]::IsNullOrWhiteSpace($trustedWorkingDirectory)) {
+        throw [System.Security.SecurityException]::new('The trusted Windows system directory could not be resolved for elevation.')
+    }
 
+    $server = New-BootstrapElevationPipeServer -PipeName $pipeName
+    $process = $null
     try {
         # Recheck immediately before process creation. The elevated loader also
         # verifies every copied byte against this pre-UAC manifest, so changes
         # made while the consent UI is open fail closed before repository code
         # can execute with administrator rights.
         Assert-BootstrapRuntimeSnapshotManifest -Manifest $manifest
-        $loaderScript = Get-BootstrapElevationLoaderScript -Manifest $manifest -PayloadId $id
-        $arguments = ConvertTo-BootstrapEncodedLoaderArguments -LoaderScript $loaderScript
-        $powerShellPath = Get-TrustedSystemExecutablePath -RelativePath 'WindowsPowerShell\v1.0\powershell.exe'
-        if (($powerShellPath.Length + 1 + $arguments.Length) -gt 28000) {
-            throw [System.Security.SecurityException]::new('The secure elevation command exceeds the conservative Windows command-line budget.')
+        $process = Start-Process -FilePath $powerShellPath -Verb RunAs -ArgumentList $arguments -WorkingDirectory $trustedWorkingDirectory -PassThru -ErrorAction Stop
+        Send-BootstrapElevationEnvelope `
+            -Server $server `
+            -ExpectedClientProcessId $process.Id `
+            -EnvelopeBytes $envelopeBytes
+        $server.Dispose()
+        $server = $null
+        [void]$process.WaitForExit()
+        $exitCode = [int]$process.ExitCode
+        if ($exitCode -notin @(0, 10, 20, 30, 64)) {
+            Write-Host ('Administrator elevation returned undocumented exit code {0}; treating it as a failure.' -f $exitCode) -ForegroundColor Red
+            return 20
         }
-        $trustedWorkingDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::System)
-        if ([string]::IsNullOrWhiteSpace($trustedWorkingDirectory)) {
-            throw [System.Security.SecurityException]::new('The trusted Windows system directory could not be resolved for elevation.')
-        }
-        $process = Start-Process -FilePath $powerShellPath -Verb RunAs -ArgumentList $arguments -WorkingDirectory $trustedWorkingDirectory -Wait -PassThru -ErrorAction Stop
-        return [int]$process.ExitCode
+        return $exitCode
     }
     catch [System.ComponentModel.Win32Exception] {
         if ($_.Exception.NativeErrorCode -eq 1223) {
@@ -1251,7 +1617,20 @@ function Start-BootstrapElevated {
         throw
     }
     finally {
-        [Environment]::SetEnvironmentVariable($environmentName, $null, 'Process')
+        if ($null -ne $server) {
+            $server.Dispose()
+        }
+        if ($null -ne $process) {
+            try {
+                if (-not $process.HasExited) {
+                    [void]$process.WaitForExit(35000)
+                }
+            }
+            catch {
+                Write-Debug ('Unable to observe elevated process termination: {0}' -f $_.Exception.Message)
+            }
+            $process.Dispose()
+        }
     }
 }
 
