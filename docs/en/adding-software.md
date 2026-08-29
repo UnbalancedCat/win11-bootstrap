@@ -14,9 +14,11 @@
 
 Protected software declares an allowed major and exact target version. Never add placeholder hashes or publishers. If trusted metadata is unavailable, encode a manual/seed flow that the runtime cannot execute until real verification data is reviewed.
 
+Do not delete or reuse an established stable key for a functionally different product. Deprecate it with `Lifecycle = @{ State = 'Deprecated'; ReplacementKey = '<active-key>' }`: the replacement must exist and be Active; the old entry is hidden from menus and default selection but remains valid when explicitly referenced by CLI/configuration and returns actionable migration guidance. An entry without `Lifecycle` is Active.
+
 ## Detection priority
 
-Prefer stable, non-launching signals: exact WinGet ID, AppX/Store identity, Publisher plus DisplayName in uninstall registry, executable product version, Windows feature state, and WSL distro list. Do not depend solely on a changing path or fuzzy display name.
+Prefer stable, non-launching signals: exact WinGet ID, AppX/Store identity, Publisher plus DisplayName in uninstall registry, executable product version, Windows feature state, and WSL distro list. Do not depend solely on a changing path or fuzzy display name. A command or service shared by different products cannot establish product identity by itself. Use `ExcludedDisplayNamePatterns` for a reviewed sibling-product exclusion when needed, and let an Active replacement use `PolicyGuardKeys` to recheck the deprecated record's protected major both during planning and at the provider boundary.
 
 ## Change checklist
 

@@ -36,7 +36,7 @@ Existing directories under `%ProgramData%\Win11Bootstrap` are never repaired int
 
 ## Version gates and seed directory
 
-RealVNC v8+ and NoMachine v10+ are policy conflicts. Automatic uninstall or downgrade is forbidden. `SeedDirectory` does not imply trust: filename, exact hash, and full Authenticode publisher must all match one catalog tuple manually reviewed for the pinned target version; runtime never guesses that target from an untrusted installer version field. Proprietary packages without that reviewed verification tuple return `ManualActionRequired`.
+RealVNC v8+ and legacy NoMachine server/Personal Edition v10+ are policy conflicts. Automatic uninstall or downgrade is forbidden. NoMachine Enterprise Client v10 is a different product and can be installed only through the separate `nomachine-client` key, exact WinGet ID, and reviewed pinned version. The deprecated `nomachine` key is not redirected to the client, preventing a silent licensing or capability change. NoMachine products share both the Player command and `nxservice`, so neither is accepted as standalone product identity. Uninstall-entry exclusion, exact WinGet IDs, and `PolicyGuardKeys` propagate a server-v10 conflict as `NonCompliant/30` during planning and again before provider invocation. `SeedDirectory` does not imply trust: filename, exact hash, and full Authenticode publisher must all match one catalog tuple manually reviewed for the pinned target version; runtime never guesses that target from an untrusted installer version field. Proprietary packages without that reviewed verification tuple return `ManualActionRequired`.
 
 ## Secrets and logs
 

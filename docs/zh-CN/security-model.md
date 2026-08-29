@@ -36,7 +36,7 @@
 
 ## 版本门禁和种子目录
 
-RealVNC v8+ 与 NoMachine v10+ 是策略冲突，任何自动卸载或降级都会扩大风险，因而禁止。`SeedDirectory` 不表示信任：文件名、精确哈希和完整 Authenticode 发布者必须与目录中针对固定目标版本人工审查的同一组元数据全部匹配；运行时不从未受信的安装器版本字段猜测目标版本。缺少这组可信元数据的专有包返回 `ManualActionRequired`。
+RealVNC v8+ 与旧 NoMachine 服务端/Personal Edition v10+ 是策略冲突，任何自动卸载或降级都会扩大风险，因而禁止。NoMachine Enterprise Client v10 是另一产品，只能通过独立的 `nomachine-client` key、精确 WinGet ID 和固定审核版本安装；弃用的 `nomachine` key 不会被重定向到客户端，从而避免许可和功能语义被静默改变。NoMachine 的 Player 命令和 `nxservice` 会被多个产品共享，因此两者都不作为独立产品身份；目录依靠卸载项排除规则、精确 WinGet ID 和 `PolicyGuardKeys`，在计划及 Provider 前把服务端 v10 冲突传播为 `NonCompliant/30`。`SeedDirectory` 不表示信任：文件名、精确哈希和完整 Authenticode 发布者必须与目录中针对固定目标版本人工审查的同一组元数据全部匹配；运行时不从未受信的安装器版本字段猜测目标版本。缺少这组可信元数据的专有包返回 `ManualActionRequired`。
 
 ## 秘密和日志
 

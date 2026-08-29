@@ -339,7 +339,7 @@ if (Test-Path -LiteralPath $catalogPath -PathType Leaf) {
     }
 }
 
-$expectedKeys = @(
+$expectedActiveKeys = @(
     'chrome'
     'clash-verge-rev'
     'xftp'
@@ -351,31 +351,37 @@ $expectedKeys = @(
     'realvnc-server'
     'realvnc-viewer'
     'netease-cloudmusic'
-    'nomachine'
+    'nomachine-client'
     'bandizip'
     'bing-wallpaper'
     'wsl2-ubuntu'
     'obsidian'
     'cc-switch'
 )
+$expectedKeys = @($expectedActiveKeys + 'nomachine')
 
 $applications = @()
 if ($null -ne $catalog) {
-    if ([string]$catalog.SchemaVersion -ne '1.0.0') {
-        Add-ValidationFailure "Catalog SchemaVersion must be 1.0.0; found '$($catalog.SchemaVersion)'."
+    if ([string]$catalog.SchemaVersion -ne '1.1.0') {
+        Add-ValidationFailure "Catalog SchemaVersion must be 1.1.0; found '$($catalog.SchemaVersion)'."
     }
 
     $applications = @($catalog.Applications)
-    if ($applications.Count -ne 17) {
-        Add-ValidationFailure "Catalog must contain exactly 17 applications; found $($applications.Count)."
+    if ($applications.Count -ne 18) {
+        Add-ValidationFailure "Catalog must contain 17 active applications and one deprecated compatibility key; found $($applications.Count)."
     }
 
     $orderedApplications = @($applications | Sort-Object { [int]$_.Order })
     $orderedKeys = @($orderedApplications | ForEach-Object { [string]$_.Key })
     Test-EqualStringSequence -Label 'Catalog key order' -Actual $orderedKeys -Expected $expectedKeys
 
+    $activeApplications = @($orderedApplications | Where-Object {
+        -not $_.ContainsKey('Lifecycle') -or [string]$_.Lifecycle.State -eq 'Active'
+    })
+    Test-EqualStringSequence -Label 'Active menu key order' -Actual @($activeApplications.Key) -Expected $expectedActiveKeys
+
     $orders = @($orderedApplications | ForEach-Object { [int]$_.Order })
-    $expectedOrders = @(1..17 | ForEach-Object { [string]$_ })
+    $expectedOrders = @(1..18 | ForEach-Object { [string]$_ })
     Test-EqualStringSequence -Label 'Catalog order values' -Actual @($orders | ForEach-Object { [string]$_ }) -Expected $expectedOrders
 
     $uniqueKeys = @($applications | ForEach-Object { [string]$_.Key } | Sort-Object -Unique)
@@ -453,6 +459,27 @@ if ($null -ne $catalog) {
                     Add-ValidationFailure "Catalog application '$key' Detection.$arrayField must be an array."
                 }
             }
+            if ($app.Detection.ContainsKey('ExcludedDisplayNamePatterns') -and
+                -not ($app.Detection.ExcludedDisplayNamePatterns -is [System.Array])) {
+                Add-ValidationFailure "Catalog application '$key' Detection.ExcludedDisplayNamePatterns must be an array."
+            }
+        }
+
+        if ($app.ContainsKey('PolicyGuardKeys')) {
+            if (-not ($app.PolicyGuardKeys -is [System.Array])) {
+                Add-ValidationFailure "Catalog application '$key' PolicyGuardKeys must be an array."
+            }
+            else {
+                foreach ($guardKey in @($app.PolicyGuardKeys)) {
+                    $guard = @(Get-CatalogApplication -Applications $applications -Key ([string]$guardKey))
+                    if ([string]::IsNullOrWhiteSpace([string]$guardKey) -or
+                        [string]$guardKey -ieq $key -or
+                        $guard.Count -ne 1 -or
+                        [string]$guard[0].VersionPolicy.RejectMajorAtOrAbove -notmatch '^\d+$') {
+                        Add-ValidationFailure "Catalog application '$key' has invalid policy guard '$guardKey'."
+                    }
+                }
+            }
         }
 
         if (-not ($app.VersionPolicy -is [System.Collections.IDictionary])) {
@@ -473,6 +500,37 @@ if ($null -ne $catalog) {
             -not $app.Safety.ContainsKey('Ready') -or
             -not ($app.Safety.Ready -is [bool])) {
             Add-ValidationFailure "Catalog application '$key' Safety.Ready must be boolean."
+        }
+
+        if ($app.ContainsKey('Lifecycle')) {
+            if (-not ($app.Lifecycle -is [System.Collections.IDictionary])) {
+                Add-ValidationFailure "Catalog application '$key' Lifecycle must be a data hashtable."
+            }
+            else {
+                $lifecycleFields = @($app.Lifecycle.Keys | ForEach-Object { [string]$_ } | Sort-Object)
+                $unknownLifecycleFields = @($lifecycleFields | Where-Object { $_ -notin @('ReplacementKey', 'State') })
+                if ($unknownLifecycleFields.Count -gt 0) {
+                    Add-ValidationFailure "Catalog application '$key' has unknown Lifecycle fields: $($unknownLifecycleFields -join ', ')."
+                }
+                $state = [string]$app.Lifecycle.State
+                if ($state -notin @('Active', 'Deprecated')) {
+                    Add-ValidationFailure "Catalog application '$key' has invalid Lifecycle.State '$state'."
+                }
+                $replacementKey = [string]$app.Lifecycle.ReplacementKey
+                if ($state -eq 'Deprecated') {
+                    $replacement = @(Get-CatalogApplication -Applications $applications -Key $replacementKey)
+                    if ([string]::IsNullOrWhiteSpace($replacementKey) -or
+                        $replacementKey -ieq $key -or
+                        $replacement.Count -ne 1 -or
+                        ($replacement[0].ContainsKey('Lifecycle') -and [string]$replacement[0].Lifecycle.State -eq 'Deprecated') -or
+                        [bool]$app.Safety.Ready) {
+                        Add-ValidationFailure "Deprecated catalog application '$key' must be unready and reference a different active replacement."
+                    }
+                }
+                elseif (-not [string]::IsNullOrWhiteSpace($replacementKey)) {
+                    Add-ValidationFailure "Active catalog application '$key' cannot declare a replacement key."
+                }
+            }
         }
 
         switch ([string]$app.InstallerType) {
@@ -568,7 +626,7 @@ if ($null -ne $catalog) {
             ForEach-Object { [string]$_.Key } |
             Sort-Object
     )
-    $expectedNotReady = @('realvnc-viewer', 'xftp', 'xshell' | Sort-Object)
+    $expectedNotReady = @('nomachine', 'realvnc-viewer', 'xftp', 'xshell' | Sort-Object)
     Test-EqualStringSequence -Label 'Fail-closed application keys' -Actual $notReadyKeys -Expected $expectedNotReady
     foreach ($app in @($applications | Where-Object { -not [bool]$_.Safety.Ready })) {
         if ([string]$app.Safety.FailureStatus -ne 'ManualActionRequired') {
@@ -614,15 +672,37 @@ if ($null -ne $catalog) {
         }
     }
 
-    $noMachine = @(Get-CatalogApplication -Applications $applications -Key 'nomachine')
-    if ($noMachine.Count -eq 1) {
-        $app = $noMachine[0]
-        if ([string]$app.WingetId -ne 'NoMachine.NoMachine' -or
-            [string]$app.WingetVersion -ne '9.8.2' -or
+    $noMachineClient = @(Get-CatalogApplication -Applications $applications -Key 'nomachine-client')
+    if ($noMachineClient.Count -eq 1) {
+        $app = $noMachineClient[0]
+        if ([string]$app.InstallerType -ne 'Winget' -or
+            [string]$app.WingetId -ne 'NoMachine.NoMachine.EnterpriseClient' -or
+            [string]$app.WingetVersion -ne '10.0.59' -or
+            [string]$app.VersionPolicy.Mode -ne 'AnyInstalled' -or
+            [string]$app.VersionPolicy.TargetVersion -ne '10.0.59' -or
+            -not [string]::IsNullOrWhiteSpace([string]$app.VersionPolicy.RejectMajorAtOrAbove) -or
+            (@($app.PolicyGuardKeys) -join '|') -cne 'nomachine' -or
+            (@($app.Detection.DisplayNamePatterns) -join '|') -cne 'NoMachine Enterprise Client*' -or
+            @($app.Detection.Commands).Count -ne 0) {
+            Add-ValidationFailure 'NoMachine Enterprise Client must remain pinned to the reviewed dedicated WinGet package 10.0.59 with product-specific detection.'
+        }
+    }
+
+    $legacyNoMachine = @(Get-CatalogApplication -Applications $applications -Key 'nomachine')
+    if ($legacyNoMachine.Count -eq 1) {
+        $app = $legacyNoMachine[0]
+        if ([string]$app.InstallerType -ne 'ManualOrSeed' -or
+            [string]$app.WingetId -ne 'NoMachine.NoMachine' -or
+            -not [string]::IsNullOrWhiteSpace([string]$app.WingetVersion) -or
             [string]$app.VersionPolicy.TargetVersion -ne '9.8.2' -or
             [string]$app.VersionPolicy.AllowedMajor -ne '9' -or
-            [string]$app.VersionPolicy.RejectMajorAtOrAbove -ne '10') {
-            Add-ValidationFailure 'NoMachine must remain pinned to reviewed version 9.8.2 and reject v10+.'
+            [string]$app.VersionPolicy.RejectMajorAtOrAbove -ne '10' -or
+            [string]$app.Lifecycle.State -ne 'Deprecated' -or
+            [string]$app.Lifecycle.ReplacementKey -ne 'nomachine-client' -or
+            (@($app.Detection.ExcludedDisplayNamePatterns) -join '|') -cne 'NoMachine Enterprise Client*' -or
+            @($app.Detection.Services).Count -ne 0 -or
+            [bool]$app.Safety.Ready) {
+            Add-ValidationFailure 'The legacy NoMachine server key must stay deprecated, unready, and gated against server v10+.'
         }
     }
 

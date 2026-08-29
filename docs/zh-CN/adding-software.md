@@ -14,9 +14,11 @@
 
 固定版本软件必须声明允许的主版本与精确目标版本。未提供真实的 SHA-256 或发布者时，不得填占位字符串，也不得让运行时执行该包；应显式标记为人工/种子流程。
 
+不要删除或复用已有稳定 key 来代表功能不同的产品。需要弃用时增加 `Lifecycle = @{ State = 'Deprecated'; ReplacementKey = '<active-key>' }`：替代 key 必须存在且为 Active；旧条目从菜单与默认选择隐藏，但仍接受显式 CLI/配置引用并返回明确迁移结果。缺少 `Lifecycle` 的条目视为 Active。
+
 ## 检测优先级
 
-优先使用不会启动应用的稳定信号：精确 WinGet ID、AppX/Store 包、卸载注册表 Publisher + DisplayName、可执行文件版本、Windows 功能与 WSL 列表。不要仅依赖易变化的安装路径，也不要仅用模糊名称匹配。
+优先使用不会启动应用的稳定信号：精确 WinGet ID、AppX/Store 包、卸载注册表 Publisher + DisplayName、可执行文件版本、Windows 功能与 WSL 列表。不要仅依赖易变化的安装路径，也不要仅用模糊名称匹配。不同产品共享的命令或服务不能单独证明产品身份；必要时使用 `ExcludedDisplayNamePatterns` 排除已核实的另一产品，并让 Active 替代项通过 `PolicyGuardKeys` 在计划与 Provider 边界复查弃用条目的受保护主版本。
 
 ## 变更清单
 

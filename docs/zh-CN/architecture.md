@@ -11,7 +11,7 @@
 ## 数据流
 
 1. 解析 CLI 和 JSON，拒绝未知字段/key。
-2. 计算选择集合：默认全部，配置 `only`，CLI `Only` 覆盖，所有 `skip` 最后移除。
+2. 计算选择集合：默认选择全部可见的 Active 条目，配置 `only`，CLI `Only` 覆盖，所有 `skip` 最后移除。隐藏的 Deprecated key 只有被显式指定时才参与计划。
 3. `WhatIf` 保持普通权限；真实执行先把配置解析为规范选项、对运行文件生成 SHA-256 清单并建立一对一次性单向本机命名管道，然后只触发一次 UAC。命令行只携带随机管道名、进程绑定信息、信封长度和摘要，不携带选项或 loader。
 4. 最小化的提权客户端与普通权限父进程把两个通道分别绑定到精确进程 ID。子进程验证请求信封的精确长度、SHA-256、版本和字段集合；父进程另行验证包含同一调用 ID 和一个已记录稳定退出码的固定长度结果帧。经验证的 loader 随后把清单文件复制到受限的随机 ProgramData 快照，复验每个副本并从快照启动真实入口，绝不跨权限边界重新打开原始配置。
 5. 加载目录并运行独立检测器；受保护的更高主版本先产生 `NonCompliant`。
@@ -22,7 +22,9 @@
 
 ## 幂等性
 
-完成状态来自系统事实而非历史状态文件。检测综合 WinGet 精确 ID、卸载注册表、AppX、命令、Windows 功能和 WSL 发行版。检测到任何既有版本时不会调用升级；RealVNC v8+ 和 NoMachine v10+ 是策略冲突而不是升级目标。
+完成状态来自系统事实而非历史状态文件。检测综合 WinGet 精确 ID、卸载注册表、AppX、命令、Windows 功能和 WSL 发行版。检测到任何既有版本时不会调用升级；RealVNC v8+ 与旧 NoMachine 服务端/Personal Edition v10+ 是策略冲突而不是升级目标。NoMachine Enterprise Client v10 是独立的纯客户端产品，使用独立 key 和精确 WinGet ID，不与旧服务端门禁混为一谈。Active 条目可以声明 `PolicyGuardKeys`；运行时在普通安装检测前和真正调用 Provider 前分别复查这些受保护条目，只传播 `NonCompliant`，不自动安装或重定向守卫条目。
+
+目录条目缺少 `Lifecycle` 时视为 Active。`Lifecycle.State = 'Deprecated'` 的条目从交互菜单和默认选择中隐藏，并通过 `Lifecycle.ReplacementKey` 给出迁移目标；其旧 key 仍可被 `-Only`、`-Skip` 和配置文件识别。弃用不会把旧 key 静默重定向到功能不同的新产品。
 
 ## Provider 边界
 

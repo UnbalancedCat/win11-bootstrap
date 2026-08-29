@@ -107,6 +107,36 @@ function Get-AppDisplayName {
     return $fallback
 }
 
+function Get-ApplicationLifecycleState {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$Application
+    )
+
+    $lifecycle = Get-ObjectValue -InputObject $Application -Name 'Lifecycle' -Default $null
+    if ($null -eq $lifecycle) {
+        return 'Active'
+    }
+    $state = [string](Get-ObjectValue -InputObject $lifecycle -Name 'State' -Default 'Active')
+    if ([string]::IsNullOrWhiteSpace($state)) {
+        return 'Active'
+    }
+    return $state
+}
+
+function Get-DefaultCatalogApplications {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$Applications
+    )
+
+    return @($Applications | Where-Object {
+        (Get-ApplicationLifecycleState -Application $_) -eq 'Active'
+    })
+}
+
 function Get-StatusDisplayText {
     [CmdletBinding()]
     param(
@@ -406,12 +436,12 @@ function Import-AppCatalog {
     $catalog = Import-PowerShellDataFile -LiteralPath $Path -ErrorAction Stop
     $schemaVersion = [string](Get-ObjectValue -InputObject $catalog -Name 'SchemaVersion' -Default '')
     if ($schemaVersion -notmatch '^1\.') {
-        throw [System.InvalidDataException]::new("Unsupported application catalog schema: '$schemaVersion'.")
+        throw [System.IO.InvalidDataException]::new("Unsupported application catalog schema: '$schemaVersion'.")
     }
 
     $applications = @(Get-ObjectValue -InputObject $catalog -Name 'Applications' -Default @())
     if ($applications.Count -eq 0) {
-        throw [System.InvalidDataException]::new('The application catalog contains no applications.')
+        throw [System.IO.InvalidDataException]::new('The application catalog contains no applications.')
     }
 
     $seenKeys = @{}
@@ -422,25 +452,94 @@ function Import-AppCatalog {
         $order = Get-ObjectValue -InputObject $app -Name 'Order' -Default $null
         $installerType = [string](Get-ObjectValue -InputObject $app -Name 'InstallerType' -Default '')
         if ([string]::IsNullOrWhiteSpace($key) -or $key -notmatch '^[a-z0-9][a-z0-9-]*$') {
-            throw [System.InvalidDataException]::new("Catalog application key is invalid: '$key'.")
+            throw [System.IO.InvalidDataException]::new("Catalog application key is invalid: '$key'.")
         }
         if ([string]::IsNullOrWhiteSpace($name)) {
-            throw [System.InvalidDataException]::new("Catalog application '$key' has no name.")
+            throw [System.IO.InvalidDataException]::new("Catalog application '$key' has no name.")
         }
         if ($null -eq $order -or [int]$order -lt 1) {
-            throw [System.InvalidDataException]::new("Catalog application '$key' has an invalid order.")
+            throw [System.IO.InvalidDataException]::new("Catalog application '$key' has an invalid order.")
         }
         if ($installerType -notin @('Winget', 'Store', 'ManualOrSeed', 'Wsl', 'Direct')) {
-            throw [System.InvalidDataException]::new("Catalog application '$key' has unsupported InstallerType '$installerType'.")
+            throw [System.IO.InvalidDataException]::new("Catalog application '$key' has unsupported InstallerType '$installerType'.")
         }
         if ($seenKeys.ContainsKey($key.ToLowerInvariant())) {
-            throw [System.InvalidDataException]::new("Duplicate catalog key: '$key'.")
+            throw [System.IO.InvalidDataException]::new("Duplicate catalog key: '$key'.")
         }
         if ($seenOrders.ContainsKey([int]$order)) {
-            throw [System.InvalidDataException]::new("Duplicate catalog order: '$order'.")
+            throw [System.IO.InvalidDataException]::new("Duplicate catalog order: '$order'.")
         }
         $seenKeys[$key.ToLowerInvariant()] = $true
         $seenOrders[[int]$order] = $true
+    }
+
+    foreach ($app in $applications) {
+        $key = [string](Get-ObjectValue -InputObject $app -Name 'Key')
+        $lifecycle = Get-ObjectValue -InputObject $app -Name 'Lifecycle' -Default $null
+        if ($null -eq $lifecycle) {
+            continue
+        }
+        if (-not ($lifecycle -is [System.Collections.IDictionary])) {
+            throw [System.IO.InvalidDataException]::new("Catalog application '$key' has an invalid Lifecycle contract.")
+        }
+        foreach ($field in @($lifecycle.Keys)) {
+            if ([string]$field -notin @('State', 'ReplacementKey')) {
+                throw [System.IO.InvalidDataException]::new("Catalog application '$key' has an unknown Lifecycle field '$field'.")
+            }
+        }
+
+        $state = Get-ApplicationLifecycleState -Application $app
+        if ($state -notin @('Active', 'Deprecated')) {
+            throw [System.IO.InvalidDataException]::new("Catalog application '$key' has unsupported Lifecycle.State '$state'.")
+        }
+        $replacementKey = [string](Get-ObjectValue -InputObject $lifecycle -Name 'ReplacementKey' -Default '')
+        if ($state -eq 'Active') {
+            if (-not [string]::IsNullOrWhiteSpace($replacementKey)) {
+                throw [System.IO.InvalidDataException]::new("Active catalog application '$key' cannot declare a replacement key.")
+            }
+            continue
+        }
+
+        if ([string]::IsNullOrWhiteSpace($replacementKey) -or
+            [string]::Equals($key, $replacementKey, [StringComparison]::OrdinalIgnoreCase) -or
+            -not $seenKeys.ContainsKey($replacementKey.ToLowerInvariant())) {
+            throw [System.IO.InvalidDataException]::new("Deprecated catalog application '$key' must reference a different active replacement key.")
+        }
+        $replacement = @($applications | Where-Object {
+            [string]::Equals([string](Get-ObjectValue -InputObject $_ -Name 'Key'), $replacementKey, [StringComparison]::OrdinalIgnoreCase)
+        })[0]
+        if ((Get-ApplicationLifecycleState -Application $replacement) -ne 'Active') {
+            throw [System.IO.InvalidDataException]::new("Deprecated catalog application '$key' must reference an active replacement key.")
+        }
+        $safety = Get-ObjectValue -InputObject $app -Name 'Safety' -Default @{}
+        if ([bool](Get-ObjectValue -InputObject $safety -Name 'Ready' -Default $false)) {
+            throw [System.IO.InvalidDataException]::new("Deprecated catalog application '$key' cannot be ready for installation.")
+        }
+    }
+
+    foreach ($app in $applications) {
+        $key = [string](Get-ObjectValue -InputObject $app -Name 'Key')
+        if (-not $app.ContainsKey('PolicyGuardKeys')) {
+            continue
+        }
+        $policyGuardKeysValue = $app.PolicyGuardKeys
+        if (-not ($policyGuardKeysValue -is [System.Array])) {
+            throw [System.IO.InvalidDataException]::new("Catalog application '$key' PolicyGuardKeys must be an array.")
+        }
+        foreach ($guardKey in (ConvertTo-StringArray $policyGuardKeysValue)) {
+            if ([string]::IsNullOrWhiteSpace($guardKey) -or
+                [string]::Equals($key, $guardKey, [StringComparison]::OrdinalIgnoreCase) -or
+                -not $seenKeys.ContainsKey($guardKey.ToLowerInvariant())) {
+                throw [System.IO.InvalidDataException]::new("Catalog application '$key' references an invalid policy guard key '$guardKey'.")
+            }
+            $guardApplication = @($applications | Where-Object {
+                [string]::Equals([string](Get-ObjectValue -InputObject $_ -Name 'Key'), $guardKey, [StringComparison]::OrdinalIgnoreCase)
+            })[0]
+            $guardPolicy = Get-ObjectValue -InputObject $guardApplication -Name 'VersionPolicy' -Default @{}
+            if ([string](Get-ObjectValue -InputObject $guardPolicy -Name 'RejectMajorAtOrAbove' -Default '') -notmatch '^\d+$') {
+                throw [System.IO.InvalidDataException]::new("Catalog policy guard '$guardKey' must define RejectMajorAtOrAbove.")
+            }
+        }
     }
 
     return $catalog
@@ -2021,10 +2120,12 @@ function Test-AppInstalled {
     # insensitive and the -match operator writes to the automatic $Matches.
     $detectedItems = New-Object System.Collections.Generic.List[object]
 
+    $excludedDisplayNamePatterns = ConvertTo-StringArray (Get-ObjectValue -InputObject $detection -Name 'ExcludedDisplayNamePatterns' -Default @())
     foreach ($pattern in (ConvertTo-StringArray (Get-ObjectValue -InputObject $detection -Name 'DisplayNamePatterns' -Default @()))) {
         foreach ($entry in $UninstallEntries) {
             $displayName = [string](Get-ObjectValue -InputObject $entry -Name 'DisplayName' -Default '')
-            if ($displayName -like $pattern) {
+            $excluded = @($excludedDisplayNamePatterns | Where-Object { $displayName -like $_ }).Count -gt 0
+            if (-not $excluded -and $displayName -like $pattern) {
                 [void]$detectedItems.Add([pscustomobject]@{
                     Kind = 'Uninstall'
                     Name = $displayName
@@ -2159,6 +2260,55 @@ function Test-AppInstalled {
         Version = ''
         Evidence = ''
         Detail = 'No installed instance was detected.'
+    }
+}
+
+function Test-CatalogPolicyGuards {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$Application,
+
+        [Parameter(Mandatory = $true)]
+        [object]$Catalog,
+
+        [Parameter()]
+        [AllowNull()]
+        [object[]]$UninstallEntries,
+
+        [Parameter()]
+        [switch]$DryRun
+    )
+
+    if ($null -eq $UninstallEntries) {
+        $UninstallEntries = @(Get-UninstallEntries)
+    }
+    $applications = @(Get-ObjectValue -InputObject $Catalog -Name 'Applications' -Default @())
+    foreach ($guardKey in (ConvertTo-StringArray (Get-ObjectValue -InputObject $Application -Name 'PolicyGuardKeys' -Default @()))) {
+        $guardApplications = @($applications | Where-Object {
+            [string]::Equals([string](Get-ObjectValue -InputObject $_ -Name 'Key'), $guardKey, [StringComparison]::OrdinalIgnoreCase)
+        })
+        if ($guardApplications.Count -ne 1) {
+            throw [System.IO.InvalidDataException]::new("Catalog policy guard '$guardKey' could not be resolved uniquely.")
+        }
+        $guardApplication = $guardApplications[0]
+        $guardResult = Test-AppInstalled -Application $guardApplication -UninstallEntries $UninstallEntries -DryRun:$DryRun
+        if ($guardResult.NonCompliant) {
+            $guardName = [string](Get-ObjectValue -InputObject $guardApplication -Name 'Name' -Default $guardKey)
+            return [pscustomobject]@{
+                NonCompliant = $true
+                Version = [string]$guardResult.Version
+                Evidence = [string]$guardResult.Evidence
+                Detail = ("Policy guard '$guardName' reported a conflict. {0}" -f $guardResult.Detail)
+            }
+        }
+    }
+
+    return [pscustomobject]@{
+        NonCompliant = $false
+        Version = ''
+        Evidence = ''
+        Detail = ''
     }
 }
 
@@ -4057,6 +4207,14 @@ function Install-CatalogApplication {
         [switch]$NoGitHubMirrors
     )
 
+    $policyGuard = Test-CatalogPolicyGuards -Application $Application -Catalog $Catalog
+    if ($policyGuard.NonCompliant) {
+        return [pscustomobject]@{
+            Status = 'NonCompliant'
+            Detail = [string]$policyGuard.Detail
+        }
+    }
+
     $safety = Get-ObjectValue -InputObject $Application -Name 'Safety' -Default @{}
     $ready = Get-ObjectValue -InputObject $safety -Name 'Ready' -Default $false
     if (-not [bool]$ready) {
@@ -4315,15 +4473,16 @@ function Invoke-Win11Bootstrap {
     }
 
     $applications = @(Get-ObjectValue -InputObject $catalog -Name 'Applications' | Sort-Object { [int](Get-ObjectValue -InputObject $_ -Name 'Order') })
+    $defaultApplications = @(Get-DefaultCatalogApplications -Applications $applications)
     try {
         if ($options.ShowMenu) {
-            $selectedApplications = @(Select-ApplicationsInteractive -Applications $applications)
+            $selectedApplications = @(Select-ApplicationsInteractive -Applications $defaultApplications)
         }
         elseif ($options.HasOnlySelection) {
             $selectedApplications = @($applications | Where-Object { $options.OnlyKeys -icontains [string](Get-ObjectValue -InputObject $_ -Name 'Key') })
         }
         else {
-            $selectedApplications = @($applications)
+            $selectedApplications = @($defaultApplications)
         }
     }
     catch [System.ArgumentException] {
@@ -4345,6 +4504,11 @@ function Invoke-Win11Bootstrap {
 
     $uninstallEntries = @(Get-UninstallEntries)
     foreach ($app in $installSelection.ToArray()) {
+        $policyGuard = Test-CatalogPolicyGuards -Application $app -Catalog $catalog -UninstallEntries $uninstallEntries -DryRun:$effectiveDryRun
+        if ($policyGuard.NonCompliant) {
+            [void]$results.Add((New-BootstrapResult -Application $app -Status 'NonCompliant' -Detail $policyGuard.Detail -Version $policyGuard.Version))
+            continue
+        }
         $detection = Test-AppInstalled -Application $app -UninstallEntries $uninstallEntries -DryRun:$effectiveDryRun
         if ($detection.NonCompliant) {
             [void]$results.Add((New-BootstrapResult -Application $app -Status 'NonCompliant' -Detail $detection.Detail -Version $detection.Version))

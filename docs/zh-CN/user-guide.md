@@ -17,6 +17,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1
 
 菜单默认选择全部 17 项。输入为空表示接受默认；可以输入 `1,3,5-8`，也可以使用 `all` 或 `none`。脚本先检测安装状态，再显示最终计划并要求确认。
 
+默认 17 项中的 NoMachine 条目是仅用于主动连接的 `nomachine-client`。旧 `nomachine` key 已弃用并从菜单/默认选择隐藏，但旧配置仍可解析：若已装 v9 则跳过；若未安装则返回 `ManualActionRequired/10` 并提示迁移；若检测到 v10 服务端或 Personal Edition 则返回 `NonCompliant/30`。脚本不会把旧 key 静默改装为客户端。
+
+该服务端门禁也会在默认选择客户端时执行；Enterprise Client v10 通过产品排除规则与精确 WinGet ID 单独识别，不会被误判成旧服务端。
+
 ## 自动化参数
 
 ```powershell
