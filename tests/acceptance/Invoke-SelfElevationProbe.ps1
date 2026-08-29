@@ -4,7 +4,11 @@
 param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
-    [string]$CandidateRoot
+    [string]$CandidateRoot,
+
+    [Parameter()]
+    [ValidateSet('Exit0', 'Exit10')]
+    [string]$Scenario = 'Exit0'
 )
 
 Set-StrictMode -Version 2.0
@@ -29,9 +33,16 @@ if ($bootstrapItem.PSIsContainer -or (($bootstrapItem.Attributes -band [IO.FileA
 }
 
 $powerShellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-$arguments = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "{0}" -Only chrome -Skip chrome -Yes' -f $bootstrapPath
+$scenarioArguments = if ($Scenario -ceq 'Exit10') {
+    '-Only realvnc-viewer -Yes'
+}
+else {
+    '-Only chrome -Skip chrome -Yes'
+}
+$expectedExitCode = if ($Scenario -ceq 'Exit10') { 10 } else { 0 }
+$arguments = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File "{0}" {1}' -f $bootstrapPath, $scenarioArguments
 
-Write-Host 'This probe triggers one UAC prompt but selects and skips the same application, so no provider may install anything.'
+Write-Host ('This {0} probe triggers one UAC prompt and must not invoke an installation provider.' -f $Scenario)
 $process = Start-Process `
     -FilePath $powerShellPath `
     -ArgumentList $arguments `
@@ -46,9 +57,9 @@ finally {
     $process.Dispose()
 }
 
-if ($exitCode -ne 0) {
-    throw "The self-elevation probe failed with exit code $exitCode. Do not bypass it by starting bootstrap.ps1 as administrator."
+if ($exitCode -ne $expectedExitCode) {
+    throw "The $Scenario self-elevation probe expected candidate exit code $expectedExitCode but received $exitCode. Do not bypass it by starting bootstrap.ps1 as administrator."
 }
 
-Write-Host 'Self-elevation probe passed: the skipped selection returned exit code 0.' -ForegroundColor Green
+Write-Host ("Self-elevation probe passed: $Scenario preserved candidate exit code $expectedExitCode.") -ForegroundColor Green
 exit 0

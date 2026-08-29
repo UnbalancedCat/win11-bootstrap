@@ -902,7 +902,10 @@ function New-BootstrapElevationPipeServer {
     param(
         [Parameter(Mandatory = $true)]
         [ValidatePattern('^win11-bootstrap-[a-f0-9]{32}$')]
-        [string]$PipeName
+        [string]$PipeName,
+
+        [Parameter()]
+        [switch]$Receive
     )
 
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -935,10 +938,17 @@ function New-BootstrapElevationPipeServer {
         [void]$security.AddAccessRule($rule)
     }
 
-    $options = [IO.Pipes.PipeOptions]::Asynchronous -bor [IO.Pipes.PipeOptions]::WriteThrough
+    $options = [IO.Pipes.PipeOptions]::Asynchronous
+    $direction = if ($Receive) {
+        [IO.Pipes.PipeDirection]::In
+    }
+    else {
+        $options = $options -bor [IO.Pipes.PipeOptions]::WriteThrough
+        [IO.Pipes.PipeDirection]::Out
+    }
     return [IO.Pipes.NamedPipeServerStream]::new(
         $PipeName,
-        [IO.Pipes.PipeDirection]::Out,
+        $direction,
         1,
         [IO.Pipes.PipeTransmissionMode]::Byte,
         $options,
@@ -994,12 +1004,113 @@ function Send-BootstrapElevationEnvelope {
     $Server.Flush()
 }
 
+function Receive-BootstrapElevationResult {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [IO.Pipes.NamedPipeServerStream]$Server,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateRange(1, 2147483647)]
+        [int]$ExpectedClientProcessId,
+
+        [Parameter(Mandatory = $true)]
+        [ValidatePattern('^[a-f0-9]{32}$')]
+        [string]$ExpectedInvocationId,
+
+        [Parameter(Mandatory = $true)]
+        [Diagnostics.Process]$Process,
+
+        [Parameter()]
+        [ValidateRange(1000, 21600000)]
+        [int]$TimeoutMilliseconds = 21600000
+    )
+
+    $asyncResult = $Server.BeginWaitForConnection($null, $null)
+    $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+    $connectionSignaled = $false
+    try {
+        while (-not $asyncResult.AsyncWaitHandle.WaitOne(250)) {
+            if ($Process.HasExited) {
+                throw [InvalidOperationException]::new('The elevated process exited without returning an authenticated result.')
+            }
+            if ($stopwatch.ElapsedMilliseconds -ge $TimeoutMilliseconds) {
+                throw [TimeoutException]::new('The elevated process did not return an authenticated result in time.')
+            }
+        }
+        $connectionSignaled = $true
+        $Server.EndWaitForConnection($asyncResult)
+    }
+    catch {
+        if (-not $connectionSignaled) {
+            $Server.Dispose()
+            try {
+                $Server.EndWaitForConnection($asyncResult)
+            }
+            catch {
+                # Disposing the server is the cancellation mechanism on
+                # Windows PowerShell 5.1. The original failure remains the
+                # security-relevant result.
+                Write-Verbose ('Cancelling the elevation result wait returned: {0}' -f $_.Exception.Message)
+            }
+        }
+        throw
+    }
+    finally {
+        $stopwatch.Stop()
+        $asyncResult.AsyncWaitHandle.Close()
+    }
+
+    Initialize-BootstrapPipeNativeMethods
+    [uint32]$clientProcessId = 0
+    if (-not [Win11Bootstrap.PipeNativeMethods]::GetNamedPipeClientProcessId(
+            $Server.SafePipeHandle,
+            [ref]$clientProcessId)) {
+        $nativeError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        throw [ComponentModel.Win32Exception]::new($nativeError, 'The elevation result client PID could not be verified.')
+    }
+    if ([int]$clientProcessId -ne $ExpectedClientProcessId) {
+        throw [System.Security.SecurityException]::new('An unexpected process connected to the elevation result pipe.')
+    }
+
+    $expectedLength = 41
+    $bytes = New-Object byte[] $expectedLength
+    $offset = 0
+    while ($offset -lt $bytes.Length) {
+        $read = $Server.Read($bytes, $offset, $bytes.Length - $offset)
+        if ($read -le 0) {
+            throw [IO.EndOfStreamException]::new('The elevation result ended before the complete frame was received.')
+        }
+        $offset += $read
+    }
+    if ($Server.ReadByte() -ne -1) {
+        throw [System.Security.SecurityException]::new('The elevation result contained trailing data.')
+    }
+
+    $strictUtf8 = New-Object Text.UTF8Encoding($false, $true)
+    try {
+        $frame = $strictUtf8.GetString($bytes)
+    }
+    catch [Text.DecoderFallbackException] {
+        throw [System.Security.SecurityException]::new('The elevation result encoding is invalid.')
+    }
+    $match = [regex]::Match($frame, '^W11B1:([a-f0-9]{32}):(00|10|20|30|64)$', [Text.RegularExpressions.RegexOptions]::CultureInvariant)
+    if (-not $match.Success -or $match.Groups[1].Value -cne $ExpectedInvocationId) {
+        throw [System.Security.SecurityException]::new('The elevation result frame is invalid.')
+    }
+    return [int]$match.Groups[2].Value
+}
+
 function Get-BootstrapElevationPipeClientScript {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
         [ValidatePattern('^win11-bootstrap-[a-f0-9]{32}$')]
         [string]$PipeName,
+
+        [Parameter(Mandatory = $true)]
+        [ValidatePattern('^win11-bootstrap-[a-f0-9]{32}$')]
+        [string]$ResultPipeName,
 
         [Parameter(Mandatory = $true)]
         [ValidateRange(1, 2147483647)]
@@ -1024,7 +1135,9 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 Set-StrictMode -Version 2.0
 $pipe = $null
+$resultPipe = $null
 $environmentName = $null
+$exitCode = 20
 try {
     $trustedModuleRoot = Join-Path $PSHOME 'Modules'
     if (-not [IO.Directory]::Exists($trustedModuleRoot)) {
@@ -1128,15 +1241,14 @@ namespace Win11Bootstrap {
     if ($exitCode -notin @(0, 10, 20, 30, 64)) {
         throw [InvalidOperationException]::new('The secure elevation loader returned an undocumented exit code.')
     }
-    exit $exitCode
 }
 catch [Security.SecurityException] {
     [Console]::Error.WriteLine('Secure elevation handoff rejected unsafe state: {0}' -f $_.Exception.Message)
-    exit 30
+    $exitCode = 30
 }
 catch {
     [Console]::Error.WriteLine('Secure elevation handoff failed: {0}' -f $_.Exception.Message)
-    exit 20
+    $exitCode = 20
 }
 finally {
     if ($environmentName) {
@@ -1146,9 +1258,50 @@ finally {
         $pipe.Dispose()
     }
 }
+
+try {
+    $resultPipe = [IO.Pipes.NamedPipeClientStream]::new(
+        '.',
+        '__RESULT_PIPE_NAME__',
+        [IO.Pipes.PipeDirection]::Out,
+        [IO.Pipes.PipeOptions]::Asynchronous,
+        [Security.Principal.TokenImpersonationLevel]::Impersonation
+    )
+    $resultPipe.Connect(30000)
+
+    [uint32]$resultServerProcessId = 0
+    if (-not [Win11Bootstrap.PipeNativeMethods]::GetNamedPipeServerProcessId(
+            $resultPipe.SafePipeHandle,
+            [ref]$resultServerProcessId)) {
+        $nativeError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        throw [ComponentModel.Win32Exception]::new($nativeError, 'The elevation result server PID could not be verified.')
+    }
+    if ([int]$resultServerProcessId -ne __PARENT_PROCESS_ID__) {
+        throw [Security.SecurityException]::new('The elevation result pipe server is not the requesting process.')
+    }
+
+    $resultFrame = 'W11B1:__INVOCATION_ID__:{0:D2}' -f $exitCode
+    [byte[]]$resultBytes = [Text.Encoding]::UTF8.GetBytes($resultFrame)
+    if ($resultBytes.Length -ne 41) {
+        throw [InvalidOperationException]::new('The elevation result frame length is invalid.')
+    }
+    $resultPipe.Write($resultBytes, 0, $resultBytes.Length)
+    $resultPipe.Flush()
+}
+catch {
+    [Console]::Error.WriteLine('Secure elevation result handoff failed: {0}' -f $_.Exception.Message)
+    exit 20
+}
+finally {
+    if ($null -ne $resultPipe) {
+        $resultPipe.Dispose()
+    }
+}
+exit $exitCode
 '@
 
     $result = $template.Replace('__PIPE_NAME__', $PipeName)
+    $result = $result.Replace('__RESULT_PIPE_NAME__', $ResultPipeName)
     $result = $result.Replace('__PARENT_PROCESS_ID__', [string]$ExpectedServerProcessId)
     $result = $result.Replace('__INVOCATION_ID__', $InvocationId)
     $result = $result.Replace('__EXPECTED_LENGTH__', [string]$ExpectedLength)
@@ -1569,9 +1722,11 @@ function Start-BootstrapElevated {
         -LoaderScript $loaderScript
     $envelopeHash = Get-ByteArraySha256Hex -Bytes $envelopeBytes
     $pipeName = 'win11-bootstrap-{0}' -f ([Guid]::NewGuid().ToString('N'))
+    $resultPipeName = 'win11-bootstrap-{0}' -f ([Guid]::NewGuid().ToString('N'))
     $parentProcessId = [Diagnostics.Process]::GetCurrentProcess().Id
     $clientScript = Get-BootstrapElevationPipeClientScript `
         -PipeName $pipeName `
+        -ResultPipeName $resultPipeName `
         -ExpectedServerProcessId $parentProcessId `
         -InvocationId $id `
         -ExpectedLength $envelopeBytes.Length `
@@ -1587,6 +1742,7 @@ function Start-BootstrapElevated {
     }
 
     $server = New-BootstrapElevationPipeServer -PipeName $pipeName
+    $resultServer = New-BootstrapElevationPipeServer -PipeName $resultPipeName -Receive
     $process = $null
     try {
         # Recheck immediately before process creation. The elevated loader also
@@ -1601,10 +1757,15 @@ function Start-BootstrapElevated {
             -EnvelopeBytes $envelopeBytes
         $server.Dispose()
         $server = $null
-        [void]$process.WaitForExit()
-        $exitCode = [int]$process.ExitCode
-        if ($exitCode -notin @(0, 10, 20, 30, 64)) {
-            Write-Host ('Administrator elevation returned undocumented exit code {0}; treating it as a failure.' -f $exitCode) -ForegroundColor Red
+        $exitCode = Receive-BootstrapElevationResult `
+            -Server $resultServer `
+            -ExpectedClientProcessId $process.Id `
+            -ExpectedInvocationId $id `
+            -Process $process
+        $resultServer.Dispose()
+        $resultServer = $null
+        if (-not $process.WaitForExit(35000)) {
+            Write-Host 'Administrator elevation returned a result but did not terminate in time; treating it as a failure.' -ForegroundColor Red
             return 20
         }
         return $exitCode
@@ -1619,6 +1780,9 @@ function Start-BootstrapElevated {
     finally {
         if ($null -ne $server) {
             $server.Dispose()
+        }
+        if ($null -ne $resultServer) {
+            $resultServer.Dispose()
         }
         if ($null -ne $process) {
             try {

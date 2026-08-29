@@ -8,7 +8,7 @@ This directory is the repository-only toolkit for the 11 stable VM scenarios. Re
 - `Compare-SystemState.ps1` reports top-level state drift and before/after SHA-256 values.
 - `Compare-StableStatuses.ps1` exactly compares expected and observed per-application stable statuses.
 - `Invoke-ReleaseCandidate.ps1` runs the extracted candidate under Windows PowerShell 5.1 and writes only redacted stdout/stderr plus a hashed command summary.
-- `Invoke-SelfElevationProbe.ps1` must start from an ordinary Windows PowerShell; it selects and skips Chrome so no provider installs anything, but exercises one real UAC handoff and requires exit 0.
+- `Invoke-SelfElevationProbe.ps1` must start from an ordinary Windows PowerShell. Its default `Exit0` scenario selects and skips Chrome; `-Scenario Exit10` selects the fail-closed RealVNC Viewer entry and requires the candidate to preserve `ManualActionRequired` as exit 10. Each invocation exercises exactly one real UAC handoff without calling an installation provider, and the probe itself exits 0 only when the candidate result matches.
 - `Test-ExplicitProxyHttps.ps1` proves an explicit process proxy can complete a real HTTPS request; a listening port alone is not success.
 - `Invoke-InstallerTrustProbe.ps1` creates its signed fixture only in `%TEMP%`, invokes the exported production trust boundary for VM-007, records `Executed=false`, and exits 30.
 - `Write-EvidenceManifest.ps1` checks a draft against the strict, secret-free contract in `evidence.schema.json` and refuses to overwrite output.
