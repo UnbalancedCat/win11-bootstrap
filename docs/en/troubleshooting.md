@@ -22,7 +22,7 @@ Typical causes are RealVNC Classic Viewer Portal access, NetSarang license downl
 
 ## `NonCompliant`
 
-RealVNC v8+, NoMachine v10+, a hash/signature mismatch, or a source-policy violation was detected. There is no automatic ignore, uninstall, or downgrade. Decide manually after backup and license/security review, then rerun if appropriate.
+RealVNC v8+, legacy NoMachine server/Personal Edition v10+, a hash/signature mismatch, or a source-policy violation was detected. NoMachine Enterprise Client v10 uses the separate `nomachine-client` key and is not this conflict. There is no automatic ignore, uninstall, or downgrade. Decide manually after backup and license/security review, then rerun if appropriate.
 
 ## WSL needs a restart
 

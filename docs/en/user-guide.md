@@ -17,6 +17,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\bootstrap.ps1
 
 All 17 items are selected by default. Empty input accepts the default; `1,3,5-8`, `all`, and `none` are supported. Installed state is detected before the final plan and confirmation are shown.
 
+The NoMachine entry among the 17 defaults is the outbound-only `nomachine-client`. The old `nomachine` key is deprecated and hidden from menus/default selection, but existing configuration still parses: an installed v9 is skipped; absence returns `ManualActionRequired/10` with migration guidance; a detected v10 server or Personal Edition returns `NonCompliant/30`. The tool never silently repurposes the old key as the client.
+
+The server gate also runs when the client is part of the default selection. Enterprise Client v10 is identified separately through the product exclusion and exact WinGet ID, so it is not mistaken for the legacy server.
+
 ## Automation
 
 ```powershell

@@ -1,5 +1,5 @@
 @{
-    # Catalog contract (schema version 1.0.0)
+    # Catalog contract (schema version 1.1.0)
     #
     # Required application fields:
     #   Key, Name, Order, InstallOrder, InstallPhase, InstallerType,
@@ -18,8 +18,10 @@
     #
     # Safety.Ready is authoritative. A false value must fail closed with
     # Safety.FailureStatus even if other installer fields appear usable.
+    # Lifecycle.State = Deprecated keeps a compatibility key valid for
+    # explicit selection while excluding it from the default menu.
 
-    SchemaVersion = '1.0.0'
+    SchemaVersion = '1.1.0'
 
     MirrorHosts = @(
         'ghfast.top'
@@ -447,31 +449,32 @@
         }
 
         @{
-            Key             = 'nomachine'
-            Name            = 'NoMachine 9'
+            Key             = 'nomachine-client'
+            Name            = 'NoMachine Enterprise Client'
             Order           = 12
             InstallOrder    = 200
             InstallPhase    = 'Standard'
             InstallerType   = 'Winget'
             RequiresNetwork = $true
             ProxyPolicy     = 'DirectThenAutoProxy'
-            WingetId        = 'NoMachine.NoMachine'
+            WingetId        = 'NoMachine.NoMachine.EnterpriseClient'
             WingetSource    = 'winget'
-            WingetVersion   = '9.8.2'
+            WingetVersion   = '10.0.59'
             StoreProductId  = ''
+            PolicyGuardKeys = @('nomachine')
             Detection       = @{
-                DisplayNamePatterns = @('NoMachine*')
-                Commands            = @('nxplayer.exe')
+                DisplayNamePatterns = @('NoMachine Enterprise Client*')
+                Commands            = @()
                 AppxNames           = @()
-                Services            = @('nxservice')
+                Services            = @()
                 WslDistribution     = ''
             }
             WindowsFeatures = @()
             VersionPolicy   = @{
-                Mode                 = 'ProtectedMajor'
-                TargetVersion        = '9.8.2'
-                AllowedMajor         = '9'
-                RejectMajorAtOrAbove = '10'
+                Mode                 = 'AnyInstalled'
+                TargetVersion        = '10.0.59'
+                AllowedMajor         = ''
+                RejectMajorAtOrAbove = ''
             }
             ManualActions   = @()
             Safety          = @{
@@ -660,6 +663,54 @@
                 Ready         = $true
                 FailureStatus = ''
                 FailureReason = ''
+            }
+        }
+
+        @{
+            Key             = 'nomachine'
+            Name            = 'NoMachine Free Server (deprecated)'
+            Order           = 18
+            InstallOrder    = 990
+            InstallPhase    = 'Standard'
+            InstallerType   = 'ManualOrSeed'
+            RequiresNetwork = $false
+            ProxyPolicy     = 'DirectThenAutoProxy'
+            WingetId        = 'NoMachine.NoMachine'
+            WingetSource    = ''
+            WingetVersion   = ''
+            StoreProductId  = ''
+            Detection       = @{
+                DisplayNamePatterns         = @('NoMachine*')
+                ExcludedDisplayNamePatterns = @('NoMachine Enterprise Client*')
+                Commands            = @()
+                AppxNames           = @()
+                Services            = @()
+                WslDistribution     = ''
+            }
+            WindowsFeatures = @()
+            VersionPolicy   = @{
+                Mode                 = 'ProtectedMajor'
+                TargetVersion        = '9.8.2'
+                AllowedMajor         = '9'
+                RejectMajorAtOrAbove = '10'
+            }
+            ManualActions   = @(
+                'This compatibility key is deprecated and no longer installs the NoMachine server. Use nomachine-client for the free outbound-only Enterprise Client.'
+            )
+            Seed            = @{
+                FileName     = ''
+                Sha256       = ''
+                SignerSubject = ''
+                SilentArgs   = @()
+            }
+            Lifecycle       = @{
+                State          = 'Deprecated'
+                ReplacementKey = 'nomachine-client'
+            }
+            Safety          = @{
+                Ready         = $false
+                FailureStatus = 'ManualActionRequired'
+                FailureReason = 'The former NoMachine Free Server entry is deprecated because version 10 no longer provides a free server product.'
             }
         }
     )

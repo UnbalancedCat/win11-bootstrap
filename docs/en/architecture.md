@@ -11,7 +11,7 @@
 ## Flow
 
 1. Parse CLI/JSON and reject unknown properties or application keys.
-2. Resolve selection: all by default, config `only`, CLI `Only` replacement, then all skip values.
+2. Resolve selection: all visible Active entries by default, config `only`, CLI `Only` replacement, then all skip values. Hidden Deprecated keys enter a plan only when explicitly named.
 3. Keep `WhatIf` unelevated; a real mutation first resolves canonical options, hashes the runtime files, and creates a pair of one-use, one-way local named pipes, then triggers UAC exactly once. The command line contains only random pipe names, process-binding data, envelope length, and digest—not options or the loader.
 4. The minimal elevated client and unelevated parent bind both channels to exact process IDs. The child verifies the request envelope's exact length, SHA-256, version, and property set; the parent separately verifies a fixed-length result frame containing the same invocation ID and one documented stable exit code. The verified loader then copies the manifest files into a restricted randomized ProgramData snapshot, verifies every copy, and starts the real entry point there. It never reopens the original config across the privilege boundary.
 5. Run independent detectors and surface protected-major conflicts first.
@@ -22,7 +22,9 @@
 
 ## Idempotency
 
-Completion comes from current system facts, not a history file. Detection combines exact WinGet IDs, uninstall registry entries, AppX packages, commands, Windows features, and WSL distro state. Any installed version prevents an upgrade. RealVNC v8+ and NoMachine v10+ are policy conflicts, not upgrade targets.
+Completion comes from current system facts, not a history file. Detection combines exact WinGet IDs, uninstall registry entries, AppX packages, commands, Windows features, and WSL distro state. Any installed version prevents an upgrade. RealVNC v8+ and legacy NoMachine server/Personal Edition v10+ are policy conflicts, not upgrade targets. NoMachine Enterprise Client v10 is a separate client-only product with its own key and exact WinGet ID, so it is not conflated with the legacy server gate. An Active entry may declare `PolicyGuardKeys`; runtime evaluates those protected records before ordinary detection and again immediately before invoking a provider. Only `NonCompliant` propagates, and a guard is never installed or redirected automatically.
+
+Catalog entries without `Lifecycle` are Active. An entry with `Lifecycle.State = 'Deprecated'` is hidden from the interactive menu and default selection, and `Lifecycle.ReplacementKey` supplies migration guidance; its old key remains valid for `-Only`, `-Skip`, and configuration files. Deprecation never silently redirects an old key to a functionally different product.
 
 ## Provider boundaries
 

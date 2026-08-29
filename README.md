@@ -102,7 +102,7 @@ Expand-Archive -LiteralPath $zip -DestinationPath $destination
 
 - GitHub 代理镜像仅可传输已经固定 SHA-256 的不可变 Release 资产，且不会成为版本或摘要来源。
 - 直接下载或本地种子安装器必须通过目录规定的哈希和签名检查；缺少可信元数据时安全停止。
-- 检测到 RealVNC v8+ 或 NoMachine v10+ 时只报告冲突，不自动降级。
+- 检测到 RealVNC v8+ 或旧 NoMachine 服务端/Personal Edition v10+ 时只报告冲突，不自动降级；免费 Enterprise Client 使用独立 key。
 - Xftp/Xshell Home/School 仅适用于满足厂商个人或教育许可条件的用户。
 - OpenAI、JetBrains、RealVNC、Clash、Ubuntu 等登录、授权或首次配置仍由用户完成。
 
@@ -156,7 +156,7 @@ Direct connectivity is always attempted first. When WinGet is functional, the to
 
 - GitHub proxy mirrors can transport only immutable Release assets with a pinned SHA-256; mirrors never provide trusted version metadata or digests.
 - Direct or seeded installers must satisfy catalog hash/signature policy. Missing trusted metadata causes a closed failure.
-- RealVNC v8+ and NoMachine v10+ are reported as conflicts and are never downgraded.
+- RealVNC v8+ and legacy NoMachine server/Personal Edition v10+ are reported as conflicts and are never downgraded; the free Enterprise Client uses a separate key.
 - Xftp/Xshell Home/School installers require the user to qualify under the vendor license.
 - Account sign-in, licensing, Clash subscriptions, and Ubuntu first-user setup remain manual.
 

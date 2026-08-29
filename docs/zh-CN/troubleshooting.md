@@ -22,7 +22,7 @@
 
 ## `NonCompliant`
 
-发现 RealVNC v8+、NoMachine v10+、摘要/签名不匹配或来源违反策略。脚本不会提供自动忽略、卸载或降级。请人工决定保留现状，或在备份并理解许可/安全影响后自行处理，再重跑。
+发现 RealVNC v8+、旧 NoMachine 服务端/Personal Edition v10+、摘要/签名不匹配或来源违反策略。NoMachine Enterprise Client v10 使用独立 `nomachine-client` key，不属于该冲突。脚本不会提供自动忽略、卸载或降级。请人工决定保留现状，或在备份并理解许可/安全影响后自行处理，再重跑。
 
 ## WSL 需要重启
 

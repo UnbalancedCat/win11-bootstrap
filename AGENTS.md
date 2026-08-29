@@ -15,7 +15,7 @@ This repository builds an idempotent Windows 11 bootstrapper. Keep this file sho
 - Support Windows PowerShell 5.1 on Windows 11 x64.
 - Preserve idempotency: detect first and never upgrade an installed application.
 - Never uninstall, downgrade, auto-reboot, or choose a non-default install directory.
-- Treat RealVNC major 8+ and NoMachine major 10+ as `NonCompliant`; never replace them automatically.
+- Treat RealVNC major 8+ and legacy NoMachine server/Personal Edition major 10+ as `NonCompliant`; the separate Enterprise Client key is not that server product.
 - Direct connections are tried first. Proxy settings must be process-scoped and restored.
 - GitHub mirrors are transport only, never a trust root. Only immutable, hash-pinned assets may use an allow-listed mirror.
 - Never execute a direct-download or seeded installer until required SHA-256 and Authenticode checks pass.

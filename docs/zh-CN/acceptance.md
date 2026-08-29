@@ -19,7 +19,7 @@
 
 4. 解压 ZIP，用同一工具提交中的 `tests/Get-RuntimeFingerprint.ps1 -RepositoryRoot <解压目录>` 计算指纹，记录候选 commit、workflow URL、ZIP SHA-256、运行时指纹、工具 commit 和 attestation 验证结果。
 5. 在普通（非管理员）Windows PowerShell 中使用匹配工具提交，先运行 `tests\acceptance\Invoke-SelfElevationProbe.ps1 -CandidateRoot <解压候选目录>`，再加 `-Scenario Exit10` 运行一次。每次调用都必须只出现一次 UAC 且不调用安装 Provider：第一次要求候选的跳过选择返回 0；第二次要求安全停止的 RealVNC Viewer 选择把 `ManualActionRequired` 保留为 10。探针仅在候选结果符合预期时自身返回 0。不得用管理员直启候选来绕过失败。
-6. 再预演 `clash-verge-rev`、`chrome`、`git`、`codex-desktop`、`realvnc-server`、`nomachine`，然后原命令重复一次。若发现运行时缺陷，必须另开 PR 并生成新候选。冻结前重新核查包 ID、Store 身份、固定版本和只能人工取得的来源。
+6. 再预演 `clash-verge-rev`、`chrome`、`git`、`codex-desktop`、`realvnc-server`、`nomachine-client`，然后原命令重复一次。任何运行时或目录变更都必须另开 PR、生成新候选、恢复干净检查点并完整重跑预演。冻结前重新核查包 ID、Store 身份、固定版本和只能人工取得的来源。
 
 运行 ZIP 白名单内文件或验收工具发生功能性变化时，全部正式证据作废，须恢复最终金检查点并从 VM-011 重跑。所有正式场景必须在七个自然日内完成，每次都记录 OS build。
 
@@ -54,7 +54,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\acceptance\Compa
 - **VM-005：**从两个干净恢复点分别建立并记录 App Installer 完全缺失，以及包存在但当前用户注册/命令损坏的前置条件。两者均须恢复可信 WinGet 并安装测试包。若当前 build 无法通过受支持 AppX 操作安全制造第二种状态，发布继续阻断；不得用 shim 或修改系统文件代替。
 - **VM-006：**A 仅监听 7897 但拒绝 CONNECT/HTTPS，必须得到 `NeedsProxy/10`；B 允许真实 HTTPS 探测后在安装传输中断流，也必须得到 `NeedsProxy/10`。目标未安装，且 WinGet 功能、WinINET、WinHTTP、环境变量和防火墙观测值前后相等。
 - **VM-007：**在真实 VM 中运行 `Invoke-InstallerTrustProbe.ps1`。两个运行时生成的案例直接调用生产 `Test-InstallerTrust`，均为 `NonCompliant/30` 且 `Executed=false`。它验证生产信任边界，不宣称 live mirror E2E。
-- **VM-008：**在隔离快照建立 RealVNC v8 与 NoMachine v10 的合成卸载项，再调用真实 `bootstrap.ps1`。两项都必须为 `NonCompliant/30`，且不调用 WinGet、不卸载、不覆盖、不降级；证据复核后销毁快照。
+- **VM-008：**在隔离快照建立 RealVNC v8 与旧 NoMachine 服务端/Personal Edition v10 的合成卸载项，再使用对应受保护 key 调用真实 `bootstrap.ps1`。两项都必须为 `NonCompliant/30`，且不调用 WinGet、不卸载、不覆盖、不降级；另外的 Enterprise Client v10 记录不得触发旧服务端门禁。证据复核后销毁快照。
 
 ## 公开记录与保留
 

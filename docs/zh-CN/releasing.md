@@ -2,7 +2,7 @@
 
 ## 发布前
 
-1. 从一手来源重新核实所有固定包，尤其是 RealVNC v7 与 NoMachine v9。
+1. 从一手来源重新核实所有固定包，尤其是 RealVNC v7 与 NoMachine Enterprise Client 10.0.59；同时单独确认已弃用服务端 key 仍阻止 server/Personal Edition v10+。
 2. 确认目录没有动态 `latest` 资产配合固定哈希、占位摘要、未知发布者或越过主版本的回退。
 3. 运行 PSScriptAnalyzer、完整 Pester 和仓库验证器。
 4. 在干净 Windows 11 VM 完成直连、代理二阶段、重复运行、WinGet 修复、安全失败和 WSL 重启场景；在对应 `docs/acceptance/vX.Y.Z.md` 中记录运行时指纹、VM build、ISO/镜像、日期、测试者和 HTTPS 证据链接。证据必须引用清单中的稳定场景 ID；勾选全部场景后才能将状态改为 `release-approved`。

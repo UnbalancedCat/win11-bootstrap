@@ -39,7 +39,7 @@ Describe 'Application catalog contract' {
         $script:SchemaPath = Join-Path -Path $script:RepositoryRoot -ChildPath 'schemas\config.schema.json'
         $script:Catalog = Import-PowerShellDataFile -LiteralPath $script:CatalogPath
         $script:Applications = @($script:Catalog.Applications)
-        $script:ExpectedKeys = @(
+        $script:ExpectedActiveKeys = @(
             'chrome',
             'clash-verge-rev',
             'xftp',
@@ -51,26 +51,40 @@ Describe 'Application catalog contract' {
             'realvnc-server',
             'realvnc-viewer',
             'netease-cloudmusic',
-            'nomachine',
+            'nomachine-client',
             'bandizip',
             'bing-wallpaper',
             'wsl2-ubuntu',
             'obsidian',
             'cc-switch'
         )
+        $script:ExpectedKeys = @($script:ExpectedActiveKeys + 'nomachine')
     }
 
-    It 'imports as pure PowerShell data with schema 1.0.0' {
-        Assert-TestEqual -Actual $script:Catalog.SchemaVersion -Expected '1.0.0' -Label 'SchemaVersion'
-        Assert-TestEqual -Actual $script:Applications.Count -Expected 17 -Label 'Application count'
+    It 'imports as pure PowerShell data with schema 1.1.0' {
+        Assert-TestEqual -Actual $script:Catalog.SchemaVersion -Expected '1.1.0' -Label 'SchemaVersion'
+        Assert-TestEqual -Actual $script:Applications.Count -Expected 18 -Label 'Application count'
     }
 
-    It 'contains exactly the 17 stable keys in menu order' {
+    It 'contains 17 active keys plus the deprecated compatibility key' {
         $ordered = @($script:Applications | Sort-Object { [int]$_.Order })
         Assert-TestEqual -Actual (@($ordered.Key) -join '|') -Expected ($script:ExpectedKeys -join '|') -Label 'Ordered keys'
-        Assert-TestEqual -Actual (@($ordered.Order) -join '|') -Expected ((1..17) -join '|') -Label 'Order values'
-        Assert-TestEqual -Actual @($script:Applications.Key | Sort-Object -Unique).Count -Expected 17 -Label 'Unique key count'
-        Assert-TestEqual -Actual @($script:Applications.InstallOrder | Sort-Object -Unique).Count -Expected 17 -Label 'Unique install-order count'
+        Assert-TestEqual -Actual (@($ordered.Order) -join '|') -Expected ((1..18) -join '|') -Label 'Order values'
+        Assert-TestEqual -Actual @($script:Applications.Key | Sort-Object -Unique).Count -Expected 18 -Label 'Unique key count'
+        Assert-TestEqual -Actual @($script:Applications.InstallOrder | Sort-Object -Unique).Count -Expected 18 -Label 'Unique install-order count'
+
+        $active = @($ordered | Where-Object {
+            -not $_.ContainsKey('Lifecycle') -or [string]$_.Lifecycle.State -eq 'Active'
+        })
+        Assert-TestEqual -Actual (@($active.Key) -join '|') -Expected ($script:ExpectedActiveKeys -join '|') -Label 'Active menu keys'
+
+        $deprecated = @($ordered | Where-Object {
+            $_.ContainsKey('Lifecycle') -and [string]$_.Lifecycle.State -eq 'Deprecated'
+        })
+        Assert-TestEqual -Actual $deprecated.Count -Expected 1 -Label 'Deprecated key count'
+        Assert-TestEqual -Actual $deprecated[0].Key -Expected 'nomachine' -Label 'Deprecated key'
+        Assert-TestEqual -Actual $deprecated[0].Lifecycle.ReplacementKey -Expected 'nomachine-client' -Label 'Replacement key'
+        Assert-TestEqual -Actual $deprecated[0].Safety.Ready -Expected $false -Label 'Deprecated readiness'
     }
 
     It 'provides every provider-required field and fails closed when unavailable' {
@@ -157,7 +171,7 @@ Describe 'Application catalog contract' {
                 ForEach-Object { [string]$_.Key } |
                 Sort-Object
         )
-        Assert-TestEqual -Actual ($actual -join '|') -Expected ((@('realvnc-viewer', 'xftp', 'xshell') | Sort-Object) -join '|') -Label 'Fail-closed keys'
+        Assert-TestEqual -Actual ($actual -join '|') -Expected ((@('nomachine', 'realvnc-viewer', 'xftp', 'xshell') | Sort-Object) -join '|') -Label 'Fail-closed keys'
         foreach ($app in @($script:Applications | Where-Object { -not [bool]$_.Safety.Ready })) {
             Assert-TestEqual -Actual ([string]::IsNullOrWhiteSpace([string]$app.Safety.FailureReason)) -Expected $false -Label "$($app.Key) failure reason"
             $seedValues = @([string]$app.Seed.FileName, [string]$app.Seed.Sha256, [string]$app.Seed.SignerSubject)
@@ -165,7 +179,7 @@ Describe 'Application catalog contract' {
         }
     }
 
-    It 'pins the reviewed RealVNC and NoMachine versions and major gates' {
+    It 'pins the reviewed RealVNC and NoMachine client versions and keeps the legacy server gate' {
         $server = @($script:Applications | Where-Object Key -eq 'realvnc-server')[0]
         Assert-TestEqual -Actual $server.WingetId -Expected 'RealVNC.VNCServer' -Label 'RealVNC Server ID'
         Assert-TestEqual -Actual $server.WingetVersion -Expected '7.18.0.14' -Label 'RealVNC Server version'
@@ -179,11 +193,25 @@ Describe 'Application catalog contract' {
         Assert-TestEqual -Actual $viewer.VersionPolicy.RejectMajorAtOrAbove -Expected '8' -Label 'RealVNC Viewer rejected major'
         Assert-TestEqual -Actual $viewer.Safety.Ready -Expected $false -Label 'RealVNC Viewer readiness'
 
-        $noMachine = @($script:Applications | Where-Object Key -eq 'nomachine')[0]
-        Assert-TestEqual -Actual $noMachine.WingetId -Expected 'NoMachine.NoMachine' -Label 'NoMachine ID'
-        Assert-TestEqual -Actual $noMachine.WingetVersion -Expected '9.8.2' -Label 'NoMachine version'
-        Assert-TestEqual -Actual $noMachine.VersionPolicy.AllowedMajor -Expected '9' -Label 'NoMachine allowed major'
-        Assert-TestEqual -Actual $noMachine.VersionPolicy.RejectMajorAtOrAbove -Expected '10' -Label 'NoMachine rejected major'
+        $client = @($script:Applications | Where-Object Key -eq 'nomachine-client')[0]
+        Assert-TestEqual -Actual $client.WingetId -Expected 'NoMachine.NoMachine.EnterpriseClient' -Label 'NoMachine client ID'
+        Assert-TestEqual -Actual $client.WingetVersion -Expected '10.0.59' -Label 'NoMachine client version'
+        Assert-TestEqual -Actual $client.VersionPolicy.Mode -Expected 'AnyInstalled' -Label 'NoMachine client version policy'
+        Assert-TestEqual -Actual $client.VersionPolicy.TargetVersion -Expected '10.0.59' -Label 'NoMachine client target'
+        Assert-TestEqual -Actual (@($client.PolicyGuardKeys) -join '|') -Expected 'nomachine' -Label 'NoMachine client policy guard'
+        Assert-TestEqual -Actual (@($client.Detection.DisplayNamePatterns) -join '|') -Expected 'NoMachine Enterprise Client*' -Label 'NoMachine client product-specific detector'
+        Assert-TestEqual -Actual @($client.Detection.Commands).Count -Expected 0 -Label 'NoMachine client shared-command detector count'
+
+        $legacy = @($script:Applications | Where-Object Key -eq 'nomachine')[0]
+        Assert-TestEqual -Actual $legacy.InstallerType -Expected 'ManualOrSeed' -Label 'Legacy NoMachine provider'
+        Assert-TestEqual -Actual $legacy.WingetId -Expected 'NoMachine.NoMachine' -Label 'Legacy NoMachine detection ID'
+        Assert-TestEqual -Actual $legacy.WingetVersion -Expected '' -Label 'Legacy NoMachine install pin'
+        Assert-TestEqual -Actual $legacy.VersionPolicy.TargetVersion -Expected '9.8.2' -Label 'Legacy NoMachine target'
+        Assert-TestEqual -Actual $legacy.VersionPolicy.AllowedMajor -Expected '9' -Label 'Legacy NoMachine allowed major'
+        Assert-TestEqual -Actual $legacy.VersionPolicy.RejectMajorAtOrAbove -Expected '10' -Label 'Legacy NoMachine rejected major'
+        Assert-TestEqual -Actual $legacy.Lifecycle.State -Expected 'Deprecated' -Label 'Legacy NoMachine lifecycle'
+        Assert-TestEqual -Actual (@($legacy.Detection.ExcludedDisplayNamePatterns) -join '|') -Expected 'NoMachine Enterprise Client*' -Label 'Legacy NoMachine exclusion'
+        Assert-TestEqual -Actual @($legacy.Detection.Services).Count -Expected 0 -Label 'Legacy NoMachine shared-service detector count'
     }
 
     It 'keeps the config schema enum synchronized with the catalog' {

@@ -2,7 +2,7 @@
 
 ## Before release
 
-1. Revalidate every pinned package from primary sources, especially RealVNC v7 and NoMachine v9.
+1. Revalidate every pinned package from primary sources, especially RealVNC v7 and NoMachine Enterprise Client 10.0.59; separately confirm the deprecated server key still blocks server/Personal Edition v10+.
 2. Reject dynamic `latest` assets paired with fixed hashes, placeholder digests, unknown publishers, or cross-major fallback.
 3. Run PSScriptAnalyzer, the complete Pester suite, and repository validation.
 4. Exercise direct, staged proxy, idempotent rerun, WinGet repair, security failure, and WSL restart scenarios in a clean Windows 11 VM. Record the runtime fingerprint, VM build/image, date, tester, and HTTPS evidence URL in the matching `docs/acceptance/vX.Y.Z.md`. Evidence must cite the checklist's stable scenario IDs; only after every scenario is complete may its status become `release-approved`.

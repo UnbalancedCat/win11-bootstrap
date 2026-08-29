@@ -133,8 +133,8 @@ Describe 'Bootstrap runtime contract' {
         $script:Catalog = Import-AppCatalog
     }
 
-    It 'loads the reviewed 17-item catalog through the runtime' {
-        Assert-RuntimeEqual -Actual @($script:Catalog.Applications).Count -Expected 17 -Label 'Catalog count'
+    It 'loads the reviewed 18-record catalog through the runtime' {
+        Assert-RuntimeEqual -Actual @($script:Catalog.Applications).Count -Expected 18 -Label 'Raw catalog count'
     }
 
     It 'parses default, all, none, ranges, and duplicate selections' {
@@ -1203,6 +1203,32 @@ Describe 'Trusted provider boundaries' {
         }
     }
 
+    It 'installs the reviewed NoMachine Enterprise Client package and exact version' {
+        InModuleScope Win11Bootstrap {
+            Mock Test-TrustedWinGetSources { [pscustomobject]@{ Trusted = $true; Detail = 'trusted' } }
+            Mock Invoke-WingetDirect {
+                param($Arguments)
+                $script:NoMachineClientArguments = @($Arguments)
+                [pscustomobject]@{ ExitCode = 0; Output = ''; SecurityFailure = $false }
+            }
+
+            $catalog = Import-AppCatalog
+            $application = @($catalog.Applications | Where-Object { $_.Key -eq 'nomachine-client' })[0]
+            $result = Invoke-WingetInstall -Application $application
+            if (-not $result.Success) {
+                throw 'The reviewed NoMachine Enterprise Client package did not use the WinGet success path.'
+            }
+            $expected = @(
+                'install', '--id', 'NoMachine.NoMachine.EnterpriseClient', '--exact', '--silent', '--no-upgrade',
+                '--accept-package-agreements', '--accept-source-agreements', '--disable-interactivity',
+                '--source', 'winget', '--version', '10.0.59'
+            )
+            if (($script:NoMachineClientArguments -join '|') -cne ($expected -join '|')) {
+                throw 'The NoMachine Enterprise Client WinGet arguments were not exact and version-pinned.'
+            }
+        }
+    }
+
     It 'pins the reviewed WinGet repair module and official PSGallery endpoint' {
         InModuleScope Win11Bootstrap {
             if ($script:WinGetClientVersion -cne '1.29.280') {
@@ -1921,6 +1947,134 @@ exit /b 5
     }
 }
 
+Describe 'Catalog lifecycle behavior' {
+    BeforeAll {
+        $script:RepositoryRoot = Split-Path -Path $PSScriptRoot -Parent
+        Import-Module -Name (Join-Path $script:RepositoryRoot 'src\Win11Bootstrap.psm1') -Force
+    }
+
+    It 'keeps the deprecated key out of defaults while retaining explicit compatibility' {
+        InModuleScope Win11Bootstrap {
+            $catalog = Import-AppCatalog
+            $defaults = @(Get-DefaultCatalogApplications -Applications @($catalog.Applications))
+            if ($defaults.Count -ne 17 -or
+                @($defaults | Where-Object { $_.Key -eq 'nomachine-client' }).Count -ne 1 -or
+                @($defaults | Where-Object { $_.Key -eq 'nomachine' }).Count -ne 0) {
+                throw 'The default catalog selection did not preserve 17 active applications and hide the legacy NoMachine key.'
+            }
+
+            $options = Resolve-BootstrapOptions -Invocation @{ Only = @('nomachine') } -Catalog $catalog
+            if (($options.OnlyKeys -join '|') -cne 'nomachine') {
+                throw 'The deprecated NoMachine key is no longer valid for explicit compatibility selection.'
+            }
+        }
+    }
+
+    It 'returns an actionable manual result for an uninstalled deprecated key' {
+        InModuleScope Win11Bootstrap {
+            $catalog = Import-AppCatalog
+            $legacy = @($catalog.Applications | Where-Object { $_.Key -eq 'nomachine' })[0]
+            $result = Install-CatalogApplication -Application $legacy -Catalog $catalog
+            if ($result.Status -ne 'ManualActionRequired' -or $result.Detail -notmatch 'nomachine-client') {
+                throw 'The deprecated NoMachine key did not return its replacement guidance.'
+            }
+            $exitCode = Get-ExitCodeForResults -Results @(
+                New-BootstrapResult -Application $legacy -Status $result.Status -Detail $result.Detail
+            )
+            if ($exitCode -ne 10) {
+                throw 'The deprecated NoMachine key did not aggregate to exit code 10.'
+            }
+        }
+    }
+}
+
+Describe 'Catalog policy guards' {
+    BeforeAll {
+        $script:RepositoryRoot = Split-Path -Path $PSScriptRoot -Parent
+        Import-Module -Name (Join-Path $script:RepositoryRoot 'src\Win11Bootstrap.psm1') -Force
+    }
+
+    It 'distinguishes Enterprise Client v10 from legacy server v9 and v10' {
+        InModuleScope Win11Bootstrap {
+            Mock Get-Command { $null }
+            Mock Get-Service { @() }
+            Mock Get-AppxPackage { @() }
+            Mock Get-WingetCommandPath { $null }
+
+            $catalog = Import-AppCatalog
+            $client = @($catalog.Applications | Where-Object { $_.Key -eq 'nomachine-client' })[0]
+            $legacy = @($catalog.Applications | Where-Object { $_.Key -eq 'nomachine' })[0]
+            $serverEntry = [pscustomobject]@{
+                DisplayName = 'NoMachine'
+                DisplayVersion = '10.0.59'
+                Publisher = 'NoMachine S.a.r.l.'
+            }
+            $serverGuard = Test-CatalogPolicyGuards -Application $client -Catalog $catalog -UninstallEntries @($serverEntry) -DryRun
+            if (-not $serverGuard.NonCompliant) {
+                throw 'The active NoMachine client did not propagate the legacy server v10 policy guard.'
+            }
+
+            $clientEntry = [pscustomobject]@{
+                DisplayName = 'NoMachine Enterprise Client'
+                DisplayVersion = '10.0.59'
+                Publisher = 'NoMachine S.a.r.l.'
+            }
+            $clientGuard = Test-CatalogPolicyGuards -Application $client -Catalog $catalog -UninstallEntries @($clientEntry) -DryRun
+            if ($clientGuard.NonCompliant) {
+                throw 'Enterprise Client v10 incorrectly triggered the legacy server policy guard.'
+            }
+            $clientState = Test-AppInstalled -Application $client -UninstallEntries @($clientEntry) -DryRun
+            $legacyState = Test-AppInstalled -Application $legacy -UninstallEntries @($clientEntry) -DryRun
+            if (-not $clientState.Installed -or $clientState.NonCompliant -or $legacyState.Installed -or $legacyState.NonCompliant) {
+                throw 'Enterprise Client v10 was not isolated from deprecated server detection.'
+            }
+
+            $legacyV9Entry = [pscustomobject]@{
+                DisplayName = 'NoMachine'
+                DisplayVersion = '9.8.2'
+                Publisher = 'NoMachine S.a.r.l.'
+            }
+            $clientOnLegacyV9 = Test-AppInstalled -Application $client -UninstallEntries @($legacyV9Entry) -DryRun
+            $legacyV9State = Test-AppInstalled -Application $legacy -UninstallEntries @($legacyV9Entry) -DryRun
+            if ($clientOnLegacyV9.Installed -or $clientOnLegacyV9.NonCompliant -or
+                -not $legacyV9State.Installed -or $legacyV9State.NonCompliant) {
+                throw 'A legacy NoMachine v9 server incorrectly satisfied Enterprise Client detection.'
+            }
+        }
+    }
+
+    It 'returns exit code 30 on a default dry run when a legacy server v10 is installed' {
+        InModuleScope Win11Bootstrap {
+            Mock Assert-SupportedEnvironment { }
+            Mock Test-IsAdministrator { $true }
+            Mock Initialize-BootstrapLog { }
+            Mock Get-UninstallEntries {
+                @([pscustomobject]@{
+                    DisplayName = 'NoMachine'
+                    DisplayVersion = '10.0.59'
+                    Publisher = 'NoMachine S.a.r.l.'
+                })
+            }
+            Mock Get-Command { $null }
+            Mock Get-Service { @() }
+            Mock Get-AppxPackage { @() }
+            Mock Get-WingetCommandPath { $null }
+            Mock Get-WslDistributions { @() }
+            Mock Test-DirectHttps { $true }
+            Mock Write-BootstrapLog { }
+            Mock Show-BootstrapPlan { }
+            Mock Show-BootstrapSummary { }
+            Mock Install-CatalogApplication { throw 'An installation provider must not run during this policy-gate dry run.' }
+
+            $exitCode = Invoke-Win11Bootstrap -Skip @() -Yes -ScriptPath (Join-Path $script:RepositoryRoot 'bootstrap.ps1') -DryRun
+            if ($exitCode -ne 30) {
+                throw "The default dry run did not propagate the legacy NoMachine v10 policy conflict: $exitCode"
+            }
+            Assert-MockCalled Install-CatalogApplication -Times 0 -Scope It
+        }
+    }
+}
+
 Describe 'Protected major detection' {
     BeforeAll {
         $script:RepositoryRoot = Split-Path -Path $PSScriptRoot -Parent
@@ -1950,7 +2104,7 @@ Describe 'Protected major detection' {
         }
     }
 
-    It 'blocks Viewer v8, NoMachine v10, prefixed, embedded, and unknown protected versions' {
+    It 'blocks Viewer v8, legacy NoMachine server v10, prefixed, embedded, and unknown protected versions' {
         InModuleScope Win11Bootstrap {
             Mock Get-Command { $null }
             Mock Get-Service { @() }
@@ -1960,10 +2114,11 @@ Describe 'Protected major detection' {
             $viewer = @($catalog.Applications | Where-Object { $_.Key -eq 'realvnc-viewer' })[0]
             $server = @($catalog.Applications | Where-Object { $_.Key -eq 'realvnc-server' })[0]
             $noMachine = @($catalog.Applications | Where-Object { $_.Key -eq 'nomachine' })[0]
+            $noMachineClient = @($catalog.Applications | Where-Object { $_.Key -eq 'nomachine-client' })[0]
 
             $cases = @(
                 @{ App = $viewer; Entry = [pscustomobject]@{ DisplayName = 'RealVNC Viewer 8.1'; DisplayVersion = '8.1'; Publisher = 'RealVNC Limited' }; Label = 'Viewer v8' },
-                @{ App = $noMachine; Entry = [pscustomobject]@{ DisplayName = 'NoMachine 10'; DisplayVersion = '10.0'; Publisher = 'NoMachine S.a.r.l.' }; Label = 'NoMachine v10' },
+                @{ App = $noMachine; Entry = [pscustomobject]@{ DisplayName = 'NoMachine'; DisplayVersion = '10.0'; Publisher = 'NoMachine S.a.r.l.' }; Label = 'NoMachine server v10' },
                 @{ App = $server; Entry = [pscustomobject]@{ DisplayName = 'RealVNC Server'; DisplayVersion = 'v8.2'; Publisher = 'RealVNC Limited' }; Label = 'v8 prefix' },
                 @{ App = $server; Entry = [pscustomobject]@{ DisplayName = 'RealVNC Server 8.3'; DisplayVersion = ''; Publisher = 'RealVNC Limited' }; Label = 'embedded version' },
                 @{ App = $server; Entry = [pscustomobject]@{ DisplayName = 'RealVNC Server'; DisplayVersion = ''; Publisher = 'RealVNC Limited' }; Label = 'unknown version' }
@@ -1973,6 +2128,20 @@ Describe 'Protected major detection' {
                 if (-not $result.Installed -or -not $result.NonCompliant) {
                     throw ("Protected-major case '{0}' was not fail-closed." -f $case.Label)
                 }
+            }
+
+            $enterpriseClientEntry = [pscustomobject]@{
+                DisplayName = 'NoMachine Enterprise Client'
+                DisplayVersion = '10.0.59'
+                Publisher = 'NoMachine S.a.r.l.'
+            }
+            $clientResult = Test-AppInstalled -Application $noMachineClient -UninstallEntries @($enterpriseClientEntry)
+            if (-not $clientResult.Installed -or $clientResult.NonCompliant) {
+                throw 'NoMachine Enterprise Client v10 was not accepted as the active client product.'
+            }
+            $legacyResult = Test-AppInstalled -Application $noMachine -UninstallEntries @($enterpriseClientEntry)
+            if ($legacyResult.Installed -or $legacyResult.NonCompliant) {
+                throw 'NoMachine Enterprise Client was incorrectly classified as the deprecated server product.'
             }
 
             $mixed = Test-AppInstalled -Application $server -UninstallEntries @(
