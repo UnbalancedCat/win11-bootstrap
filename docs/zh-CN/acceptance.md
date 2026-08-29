@@ -18,7 +18,7 @@
    ```
 
 4. 解压 ZIP，用同一工具提交中的 `tests/Get-RuntimeFingerprint.ps1 -RepositoryRoot <解压目录>` 计算指纹，记录候选 commit、workflow URL、ZIP SHA-256、运行时指纹、工具 commit 和 attestation 验证结果。
-5. 在普通（非管理员）Windows PowerShell 中运行匹配工具提交的 `tests\acceptance\Invoke-SelfElevationProbe.ps1 -CandidateRoot <解压候选目录>`，确认只出现一次 UAC、没有 Provider 安装且退出 0。不得用管理员直启候选来绕过失败。
+5. 在普通（非管理员）Windows PowerShell 中使用匹配工具提交，先运行 `tests\acceptance\Invoke-SelfElevationProbe.ps1 -CandidateRoot <解压候选目录>`，再加 `-Scenario Exit10` 运行一次。每次调用都必须只出现一次 UAC 且不调用安装 Provider：第一次要求候选的跳过选择返回 0；第二次要求安全停止的 RealVNC Viewer 选择把 `ManualActionRequired` 保留为 10。探针仅在候选结果符合预期时自身返回 0。不得用管理员直启候选来绕过失败。
 6. 再预演 `clash-verge-rev`、`chrome`、`git`、`codex-desktop`、`realvnc-server`、`nomachine`，然后原命令重复一次。若发现运行时缺陷，必须另开 PR 并生成新候选。冻结前重新核查包 ID、Store 身份、固定版本和只能人工取得的来源。
 
 运行 ZIP 白名单内文件或验收工具发生功能性变化时，全部正式证据作废，须恢复最终金检查点并从 VM-011 重跑。所有正式场景必须在七个自然日内完成，每次都记录 OS build。
