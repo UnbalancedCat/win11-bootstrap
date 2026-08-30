@@ -54,6 +54,161 @@ function Test-AcceptanceSecretText {
     return $true
 }
 
+function Get-AcceptanceObjectValue {
+    param(
+        [Parameter(Mandatory = $true)]$InputObject,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter()]$Default = $null
+    )
+
+    if ($null -eq $InputObject) { return $Default }
+    if ($InputObject -is [Collections.IDictionary]) {
+        if ($InputObject.Contains($Name)) { return $InputObject[$Name] }
+        return $Default
+    }
+    $property = $InputObject.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $Default }
+    return $property.Value
+}
+
+function Test-AcceptanceObjectMember {
+    param(
+        [Parameter(Mandatory = $true)][AllowNull()]$InputObject,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if ($null -eq $InputObject) { return $false }
+    if ($InputObject -is [Collections.IDictionary]) { return $InputObject.Contains($Name) }
+    return ($null -ne $InputObject.PSObject.Properties[$Name])
+}
+
+function Get-AcceptanceInterfaceIndex {
+    param([Parameter(Mandatory = $true)]$InputObject)
+
+    $value = Get-AcceptanceObjectValue -InputObject $InputObject -Name 'InterfaceIndex'
+    if ($null -eq $value) {
+        $value = Get-AcceptanceObjectValue -InputObject $InputObject -Name 'ifIndex' -Default 0
+    }
+    return [int]$value
+}
+
+function ConvertTo-AcceptanceNetworkState {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)]$NetworkState)
+
+    $adapters = @(
+        foreach ($adapter in @(Get-AcceptanceObjectValue -InputObject $NetworkState -Name 'adapters' -Default @())) {
+            if ($null -eq $adapter) { continue }
+            [pscustomobject][ordered]@{
+                InterfaceIndex = Get-AcceptanceInterfaceIndex -InputObject $adapter
+                Name = Protect-AcceptanceText -Text ([string](Get-AcceptanceObjectValue -InputObject $adapter -Name 'Name' -Default ''))
+                InterfaceDescription = Protect-AcceptanceText -Text ([string](Get-AcceptanceObjectValue -InputObject $adapter -Name 'InterfaceDescription' -Default ''))
+                Status = Protect-AcceptanceText -Text ([string](Get-AcceptanceObjectValue -InputObject $adapter -Name 'Status' -Default ''))
+                MacAddress = Protect-AcceptanceText -Text ([string](Get-AcceptanceObjectValue -InputObject $adapter -Name 'MacAddress' -Default ''))
+            }
+        }
+    )
+    $adapters = @($adapters | Sort-Object -Property InterfaceIndex, Name, InterfaceDescription, Status, MacAddress)
+
+    $ipv4Addresses = @(
+        foreach ($address in @(Get-AcceptanceObjectValue -InputObject $NetworkState -Name 'ipv4Addresses' -Default @())) {
+            if ($null -eq $address) { continue }
+            [pscustomobject][ordered]@{
+                InterfaceIndex = Get-AcceptanceInterfaceIndex -InputObject $address
+                IPAddress = Protect-AcceptanceText -Text ([string](Get-AcceptanceObjectValue -InputObject $address -Name 'IPAddress' -Default ''))
+                PrefixLength = [int](Get-AcceptanceObjectValue -InputObject $address -Name 'PrefixLength' -Default 0)
+            }
+        }
+    )
+    $ipv4Addresses = @($ipv4Addresses | Sort-Object -Property InterfaceIndex, IPAddress, PrefixLength)
+
+    $ipv4Routes = @(
+        foreach ($route in @(Get-AcceptanceObjectValue -InputObject $NetworkState -Name 'ipv4Routes' -Default @())) {
+            if ($null -eq $route) { continue }
+            [pscustomobject][ordered]@{
+                InterfaceIndex = Get-AcceptanceInterfaceIndex -InputObject $route
+                DestinationPrefix = Protect-AcceptanceText -Text ([string](Get-AcceptanceObjectValue -InputObject $route -Name 'DestinationPrefix' -Default ''))
+                NextHop = Protect-AcceptanceText -Text ([string](Get-AcceptanceObjectValue -InputObject $route -Name 'NextHop' -Default ''))
+                RouteMetric = [int](Get-AcceptanceObjectValue -InputObject $route -Name 'RouteMetric' -Default 0)
+            }
+        }
+    )
+    $ipv4Routes = @($ipv4Routes | Sort-Object -Property InterfaceIndex, DestinationPrefix, NextHop, RouteMetric)
+
+    $ipv4Dns = @(
+        foreach ($dns in @(Get-AcceptanceObjectValue -InputObject $NetworkState -Name 'ipv4Dns' -Default @())) {
+            if ($null -eq $dns) { continue }
+            $serverAddresses = @(
+                foreach ($serverAddress in @(Get-AcceptanceObjectValue -InputObject $dns -Name 'ServerAddresses' -Default @())) {
+                    if ($null -ne $serverAddress) {
+                        Protect-AcceptanceText -Text ([string]$serverAddress)
+                    }
+                }
+            )
+            $serverAddresses = @($serverAddresses | Sort-Object -Unique)
+            [pscustomobject][ordered]@{
+                InterfaceIndex = Get-AcceptanceInterfaceIndex -InputObject $dns
+                ServerAddresses = $serverAddresses
+            }
+        }
+    )
+    $ipv4Dns = @($ipv4Dns | Sort-Object -Property InterfaceIndex, @{ Expression = { @($_.ServerAddresses) -join ',' } })
+
+    $ipv6Addresses = @(
+        foreach ($address in @(Get-AcceptanceObjectValue -InputObject $NetworkState -Name 'ipv6Addresses' -Default @())) {
+            if ($null -eq $address) { continue }
+            [pscustomobject][ordered]@{
+                InterfaceIndex = Get-AcceptanceInterfaceIndex -InputObject $address
+                IPAddress = Protect-AcceptanceText -Text ([string](Get-AcceptanceObjectValue -InputObject $address -Name 'IPAddress' -Default ''))
+                PrefixLength = [int](Get-AcceptanceObjectValue -InputObject $address -Name 'PrefixLength' -Default 0)
+            }
+        }
+    )
+    $ipv6Addresses = @($ipv6Addresses | Sort-Object -Property InterfaceIndex, IPAddress, PrefixLength)
+
+    $ipv6Routes = @(
+        foreach ($route in @(Get-AcceptanceObjectValue -InputObject $NetworkState -Name 'ipv6Routes' -Default @())) {
+            if ($null -eq $route) { continue }
+            [pscustomobject][ordered]@{
+                InterfaceIndex = Get-AcceptanceInterfaceIndex -InputObject $route
+                DestinationPrefix = Protect-AcceptanceText -Text ([string](Get-AcceptanceObjectValue -InputObject $route -Name 'DestinationPrefix' -Default ''))
+                NextHop = Protect-AcceptanceText -Text ([string](Get-AcceptanceObjectValue -InputObject $route -Name 'NextHop' -Default ''))
+                RouteMetric = [int](Get-AcceptanceObjectValue -InputObject $route -Name 'RouteMetric' -Default 0)
+            }
+        }
+    )
+    $ipv6Routes = @($ipv6Routes | Sort-Object -Property InterfaceIndex, DestinationPrefix, NextHop, RouteMetric)
+
+    $ipv6Dns = @(
+        foreach ($dns in @(Get-AcceptanceObjectValue -InputObject $NetworkState -Name 'ipv6Dns' -Default @())) {
+            if ($null -eq $dns) { continue }
+            $serverAddresses = @(
+                foreach ($serverAddress in @(Get-AcceptanceObjectValue -InputObject $dns -Name 'ServerAddresses' -Default @())) {
+                    if ($null -ne $serverAddress) {
+                        Protect-AcceptanceText -Text ([string]$serverAddress)
+                    }
+                }
+            )
+            $serverAddresses = @($serverAddresses | Sort-Object -Unique)
+            [pscustomobject][ordered]@{
+                InterfaceIndex = Get-AcceptanceInterfaceIndex -InputObject $dns
+                ServerAddresses = $serverAddresses
+            }
+        }
+    )
+    $ipv6Dns = @($ipv6Dns | Sort-Object -Property InterfaceIndex, @{ Expression = { @($_.ServerAddresses) -join ',' } })
+
+    return [ordered]@{
+        adapters = $adapters
+        ipv4Addresses = $ipv4Addresses
+        ipv4Routes = $ipv4Routes
+        ipv4Dns = $ipv4Dns
+        ipv6Addresses = $ipv6Addresses
+        ipv6Routes = $ipv6Routes
+        ipv6Dns = $ipv6Dns
+    }
+}
+
 function ConvertTo-AcceptanceJson {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)]$InputObject)
@@ -117,8 +272,37 @@ function Get-AcceptanceSystemState {
         })
     }
 
+    $networkState = [ordered]@{
+        adapters = @()
+        ipv4Addresses = @()
+        ipv4Routes = @()
+        ipv4Dns = @()
+        ipv6Addresses = @()
+        ipv6Routes = @()
+        ipv6Dns = @()
+    }
+    if (Get-Command Get-NetAdapter -ErrorAction SilentlyContinue) {
+        $networkState.adapters = @(Get-NetAdapter -ErrorAction Stop)
+    }
+    if (Get-Command Get-NetIPAddress -ErrorAction SilentlyContinue) {
+        $networkState.ipv4Addresses = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop)
+    }
+    if (Get-Command Get-NetRoute -ErrorAction SilentlyContinue) {
+        $networkState.ipv4Routes = @(Get-NetRoute -AddressFamily IPv4 -ErrorAction Stop)
+    }
+    if (Get-Command Get-DnsClientServerAddress -ErrorAction SilentlyContinue) {
+        $networkState.ipv4Dns = @(Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction Stop)
+        $networkState.ipv6Dns = @(Get-DnsClientServerAddress -AddressFamily IPv6 -ErrorAction Stop)
+    }
+    if (Get-Command Get-NetIPAddress -ErrorAction SilentlyContinue) {
+        $networkState.ipv6Addresses = @(Get-NetIPAddress -AddressFamily IPv6 -ErrorAction Stop)
+    }
+    if (Get-Command Get-NetRoute -ErrorAction SilentlyContinue) {
+        $networkState.ipv6Routes = @(Get-NetRoute -AddressFamily IPv6 -ErrorAction Stop)
+    }
+
     return [ordered]@{
-        schemaVersion = 1
+        schemaVersion = 2
         os = [ordered]@{
             productName = [string]$os.ProductName
             displayVersion = [string]$os.DisplayVersion
@@ -136,6 +320,58 @@ function Get-AcceptanceSystemState {
         }
         winget = $wingetState
         firewallProfiles = $firewallProfiles
+        network = ConvertTo-AcceptanceNetworkState -NetworkState $networkState
+    }
+}
+
+function Assert-AcceptanceSystemStateContract {
+    param(
+        [Parameter(Mandatory = $true)]$Before,
+        [Parameter(Mandatory = $true)]$After
+    )
+
+    foreach ($entry in @(
+        [pscustomobject]@{ Name = 'before'; State = $Before },
+        [pscustomobject]@{ Name = 'after'; State = $After }
+    )) {
+        if (-not (Test-AcceptanceObjectMember -InputObject $entry.State -Name 'schemaVersion')) {
+            throw "System state '$($entry.Name)' is missing required field 'schemaVersion'."
+        }
+        $schemaVersion = Get-AcceptanceObjectValue -InputObject $entry.State -Name 'schemaVersion'
+        if ($schemaVersion -isnot [int]) {
+            throw "System state '$($entry.Name)' schemaVersion must be integer 2."
+        }
+    }
+
+    $beforeSchemaVersion = Get-AcceptanceObjectValue -InputObject $Before -Name 'schemaVersion'
+    $afterSchemaVersion = Get-AcceptanceObjectValue -InputObject $After -Name 'schemaVersion'
+    if ($beforeSchemaVersion -ne $afterSchemaVersion) {
+        throw 'System-state schemaVersion mismatch between before and after.'
+    }
+    if ($beforeSchemaVersion -ne 2) {
+        throw "Unsupported system-state schemaVersion '$beforeSchemaVersion'; expected 2."
+    }
+
+    $requiredTopLevelFields = @('os', 'proxy', 'winget', 'firewallProfiles', 'network')
+    $requiredNetworkFields = @(
+        'adapters', 'ipv4Addresses', 'ipv4Routes', 'ipv4Dns',
+        'ipv6Addresses', 'ipv6Routes', 'ipv6Dns'
+    )
+    foreach ($entry in @(
+        [pscustomobject]@{ Name = 'before'; State = $Before },
+        [pscustomobject]@{ Name = 'after'; State = $After }
+    )) {
+        foreach ($field in $requiredTopLevelFields) {
+            if (-not (Test-AcceptanceObjectMember -InputObject $entry.State -Name $field)) {
+                throw "System state '$($entry.Name)' is missing required field '$field'."
+            }
+        }
+        $network = Get-AcceptanceObjectValue -InputObject $entry.State -Name 'network'
+        foreach ($field in $requiredNetworkFields) {
+            if (-not (Test-AcceptanceObjectMember -InputObject $network -Name $field)) {
+                throw "System state '$($entry.Name).network' is missing required field '$field'."
+            }
+        }
     }
 }
 
@@ -143,10 +379,11 @@ function Compare-AcceptanceSystemState {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)]$Before, [Parameter(Mandatory = $true)]$After)
 
+    Assert-AcceptanceSystemStateContract -Before $Before -After $After
     $beforeJson = ConvertTo-AcceptanceJson -InputObject $Before
     $afterJson = ConvertTo-AcceptanceJson -InputObject $After
     $differences = New-Object 'System.Collections.Generic.List[string]'
-    foreach ($propertyName in @('schemaVersion', 'os', 'proxy', 'winget', 'firewallProfiles')) {
+    foreach ($propertyName in @('schemaVersion', 'os', 'proxy', 'winget', 'firewallProfiles', 'network')) {
         $beforeValue = ConvertTo-AcceptanceJson -InputObject $Before.$propertyName
         $afterValue = ConvertTo-AcceptanceJson -InputObject $After.$propertyName
         if ($beforeValue -cne $afterValue) { [void]$differences.Add($propertyName) }
@@ -257,6 +494,6 @@ function Test-AcceptanceEvidence {
 
 Export-ModuleMember -Function @(
     'Get-AcceptanceSha256', 'Protect-AcceptanceText', 'Test-AcceptanceSecretText',
-    'ConvertTo-AcceptanceJson', 'Get-AcceptanceSystemState', 'Compare-AcceptanceSystemState',
+    'ConvertTo-AcceptanceJson', 'ConvertTo-AcceptanceNetworkState', 'Get-AcceptanceSystemState', 'Compare-AcceptanceSystemState',
     'Compare-AcceptanceStatuses', 'New-AcceptanceEvidenceManifest', 'Test-AcceptanceEvidence'
 )

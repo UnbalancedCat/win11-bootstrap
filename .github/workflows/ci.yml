@@ -75,6 +75,8 @@ jobs:
       - name: Validate Gateway tooling
         shell: bash
         run: |
-          python3 -c "import ast,pathlib; ast.parse(pathlib.Path('tests/acceptance/gateway/fault_proxy.py').read_text(encoding='utf-8'))"
+          python3 -c "import ast,pathlib; [ast.parse(path.read_text(encoding='utf-8'), filename=str(path)) for path in sorted(pathlib.Path('tests/acceptance/gateway').glob('*.py'))]"
+          python3 -B -c "import sys,unittest; suite = unittest.defaultTestLoader.discover('tests/acceptance/gateway', pattern='test_*.py'); count = suite.countTestCases(); print(f'Gateway Python tests discovered: {count}'); sys.exit(f'Expected at least 40 Gateway Python tests, found {count}') if count < 40 else None"
           python3 -B -m unittest discover -s tests/acceptance/gateway -p 'test_*.py'
-          bash -n tests/acceptance/gateway/configure_gateway.sh
+          bash -n tests/acceptance/gateway/configure_gateway.sh tests/acceptance/gateway/test_configure_gateway.sh
+          bash tests/acceptance/gateway/test_configure_gateway.sh

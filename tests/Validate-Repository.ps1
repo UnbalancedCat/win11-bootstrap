@@ -78,7 +78,15 @@ $requiredPaths = @(
     'tests\acceptance\Invoke-SelfElevationProbe.ps1'
     'tests\acceptance\Compare-StableStatuses.ps1'
     'tests\acceptance\evidence.schema.json'
+    'tests\acceptance\gateway\README.md'
+    'tests\acceptance\gateway\capture_gateway_state.py'
+    'tests\acceptance\gateway\configure_gateway.sh'
     'tests\acceptance\gateway\fault_proxy.py'
+    'tests\acceptance\gateway\gateway_policy.py'
+    'tests\acceptance\gateway\test_capture_gateway_state.py'
+    'tests\acceptance\gateway\test_configure_gateway.sh'
+    'tests\acceptance\gateway\test_fault_proxy.py'
+    'tests\acceptance\gateway\test_gateway_policy.py'
     'PSScriptAnalyzerSettings.psd1'
     'docs\index.md'
     '.github\workflows\ci.yml'
@@ -190,13 +198,137 @@ if (Test-Path -LiteralPath $ciWorkflowPath -PathType Leaf) {
     if ($ciWorkflowText.IndexOf('Import-Module Pester -RequiredVersion 5.7.1 -Force -ErrorAction Stop', [StringComparison]::Ordinal) -lt 0) {
         Add-ValidationFailure 'PR CI must explicitly import the reviewed Pester version before running tests.'
     }
-    foreach ($fragment in @('acceptance-tools:', 'python3 -B -m unittest discover', 'bash -n tests/acceptance/gateway/configure_gateway.sh')) {
+    foreach ($fragment in @(
+        'acceptance-tools:'
+        "pathlib.Path('tests/acceptance/gateway').glob('*.py')"
+        "unittest.defaultTestLoader.discover('tests/acceptance/gateway', pattern='test_*.py')"
+        'count = suite.countTestCases()'
+        'if count < 40'
+        "python3 -B -m unittest discover -s tests/acceptance/gateway -p 'test_*.py'"
+        'bash -n tests/acceptance/gateway/configure_gateway.sh tests/acceptance/gateway/test_configure_gateway.sh'
+        'bash tests/acceptance/gateway/test_configure_gateway.sh'
+    )) {
         if ($ciWorkflowText.IndexOf($fragment, [StringComparison]::Ordinal) -lt 0) {
             Add-ValidationFailure "PR CI is missing acceptance-tool validation: $fragment"
         }
     }
     if ($ciWorkflowText -match 'actions/attest@') {
         Add-ValidationFailure 'PR CI must not create an artifact attestation.'
+    }
+}
+
+$gatewayFrozenFragments = [ordered]@{
+    'tests\acceptance\gateway\configure_gateway.sh' = @(
+        'readonly PRODUCTION_PYTHON="/usr/bin/python3"'
+        'unset CDPATH ENV BASH_ENV PYTHONHOME PYTHONPATH PYTHONSTARTUP PYTHONWARNINGS'
+        'validate_trusted_directory_chain "$SCRIPT_DIR" "$TRUST_CHAIN_STOP"'
+        '"$PYTHON_BIN" -I -B "$POLICY_TOOL"'
+    )
+    'tests\acceptance\gateway\gateway_policy.py' = @(
+        'SUT_ADDRESS = "192.168.77.10"'
+        '"vm004-runtime",'
+        '"vm006",'
+        'raise PolicyError("vm006 must not allow forwarded endpoints")'
+        'stat.S_IMODE(before.st_mode) != 0o600'
+        'type filter hook forward priority filter; policy drop;'
+        'os.O_EXCL'
+    )
+    'tests\acceptance\gateway\fault_proxy.py' = @(
+        'BIND_ADDRESS = "192.168.77.1"'
+        'ALLOWED_CLIENT = ipaddress.ip_address("192.168.77.10")'
+        'PROBE_HOST = "www.microsoft.com"'
+        'DROP_AFTER_BYTES = 65536'
+        'connect_pinned(rule, policy.connect_timeout)'
+        'os.O_EXCL'
+    )
+    'tests\acceptance\gateway\capture_gateway_state.py' = @(
+        'IP = "/usr/sbin/ip"'
+        'FIXTURE_FILE_ALLOWLIST = ('
+        'def _load_frozen_sibling(name: str):'
+        'LISTENER_ENDPOINT = f"{LAB_ADDRESS}:{PROXY_PORT}"'
+        'Gateway must expose only unique lo, WAN, and LAN links'
+        'IP, "-j", "-4", "route", "show", "table", "all"'
+        'IP, "-j", "-6", "route", "show", "table", "all"'
+        'IP, "-j", "-4", "rule", "show"'
+        'IP, "-j", "-6", "rule", "show"'
+        'policy rules differ from local/main/default'
+        'nft match, counter, verdict, or NAT semantics differ'
+        'if forwarding != {"ipv4": 1, "ipv6All": 0, "ipv6Default": 0}:'
+        'fault-proxy is not a root-owned system python3 process'
+        'VM-004 forbids ready-file and every port-7897 bind'
+        'VM-006 requires one listener and a validated ready file'
+        'if (profile == "vm006") != bool(ready_file):'
+        'argv[1:3] != ["-I", "-B"]'
+        'def _is_isolated_no_bytecode_runtime() -> bool:'
+        'def _open_trusted_output_parent(output: str)'
+        'os.O_EXCL'
+        'os.O_NOFOLLOW'
+        'parser.add_argument("--fixture-root", required=True)'
+        'parser.add_argument("--profile", required=True, choices=sorted(PROFILES))'
+        'parser.add_argument("--ready-file")'
+    )
+    'tests\acceptance\gateway\test_gateway_policy.py' = @(
+        'test_rejects_duplicates_overlap_and_profile_cardinality'
+        'test_vm006_allows_only_the_local_fault_proxy_input'
+    )
+    'tests\acceptance\gateway\test_fault_proxy.py' = @(
+        'test_reject_profile_never_opens_upstream_socket'
+        'test_connects_only_to_a_pinned_address'
+        'self.assertEqual({"bytes", "event", "role", "timestamp"}, set(record))'
+    )
+    'tests\acceptance\gateway\test_capture_gateway_state.py' = @(
+        'test_valid_vm004_is_redacted_and_policy_bound'
+        'test_nft_missing_unknown_duplicate_wrong_chain_action_and_match_fail'
+        'test_third_nic_lan_default_policy_rule_and_forwarding_fail'
+        'test_listener_and_ready_profile_boundaries'
+        'test_output_is_create_new_trusted_parent_0600'
+        'test_profile_mismatch_and_nonroot_main_fail_closed'
+        'test_main_requires_isolated_no_bytecode_runtime'
+        'test_vm006_process_requires_isolated_no_bytecode_argv'
+    )
+    'tests\acceptance\gateway\test_configure_gateway.sh' = @(
+        'TEST_COUNT=0'
+        'test_dirty_preflight_fails_before_mutation'
+        'test_unsafe_fixture_chain_fails_before_mutation'
+        'test_cleanup_failure_keeps_default_drop_and_returns_71'
+        '((TEST_COUNT == 12)) || fail_test "expected 12 test cases but executed $TEST_COUNT"'
+    )
+    'tests\acceptance\gateway\README.md' = @(
+        '--profile vm004-runtime'
+        '--profile vm006'
+        '--ready-file'
+        'root-owned'
+        'NTFS evidence VHDX'
+        '`timestamp`, `role`, `event`, and `bytes`'
+        '/usr/bin/python3 -I -B'
+    )
+    'tests\acceptance\README.md' = @(
+        'required `--profile`'
+        'VM-006 additionally requires `--ready-file`'
+        'host-side NTFS evidence VHDX'
+    )
+    'docs\zh-CN\acceptance.md' = @(
+        '`capture_gateway_state.py`'
+        '`--profile`'
+        '`--ready-file`'
+        'NTFS evidence VHDX'
+    )
+    'docs\en\acceptance.md' = @(
+        'required `--profile`'
+        'uses `--profile vm006` and also requires `--ready-file`'
+        'approved private NTFS evidence VHDX'
+    )
+}
+foreach ($gatewayEntry in $gatewayFrozenFragments.GetEnumerator()) {
+    $gatewayPath = Join-Path -Path $repositoryRoot -ChildPath $gatewayEntry.Key
+    if (-not (Test-Path -LiteralPath $gatewayPath -PathType Leaf)) {
+        continue
+    }
+    $gatewayText = Get-Content -LiteralPath $gatewayPath -Raw -Encoding UTF8
+    foreach ($fragment in $gatewayEntry.Value) {
+        if ($gatewayText.IndexOf($fragment, [StringComparison]::Ordinal) -lt 0) {
+            Add-ValidationFailure "Gateway fixture '$($gatewayEntry.Key)' is missing frozen security policy: $fragment"
+        }
     }
 }
 
