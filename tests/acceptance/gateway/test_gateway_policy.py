@@ -217,7 +217,17 @@ class GatewayPolicyTests(unittest.TestCase):
         rules = gateway_policy.render_rules(policy, "wan0", "lan0")
         self.assertIn("ip saddr 192.168.77.10 tcp dport 7897 counter accept", rules)
         forward = rules.split("chain forward", 1)[1].split("}", 1)[0]
-        self.assertNotIn("counter accept", forward)
+        self.assertFalse(
+            any(
+                'iifname "lan0"' in line and "counter accept" in line
+                for line in forward.splitlines()
+            )
+        )
+        self.assertIn(
+            'iifname "wan0" oifname "lan0" ip daddr 192.168.77.10 '
+            'ct state established,related counter accept',
+            forward,
+        )
 
     def test_cli_creates_private_rules_and_outputs_only_hashes_and_counts(self):
         policy_path = self.write_policy(self.valid_document())
