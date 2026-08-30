@@ -20,7 +20,16 @@ Describe 'Acceptance evidence tooling' {
     }
 
     It 'compares stable system-state structures and identifies top-level changes' {
-        $before = [pscustomobject]@{ schemaVersion = 1; os = @{ build = '1' }; proxy = @{ value = $null }; winget = @{ available = $true }; firewallProfiles = @() }
+        $network = ConvertTo-AcceptanceNetworkState -NetworkState @{
+            adapters = @([pscustomobject]@{ InterfaceIndex = 7; Name = 'Lab'; InterfaceDescription = 'Lab adapter'; Status = 'Up'; MacAddress = '00-11-22-33-44-55' })
+            ipv4Addresses = @([pscustomobject]@{ InterfaceIndex = 7; IPAddress = '192.168.77.10'; PrefixLength = 24 })
+            ipv4Routes = @([pscustomobject]@{ InterfaceIndex = 7; DestinationPrefix = '0.0.0.0/0'; NextHop = '192.168.77.1'; RouteMetric = 5 })
+            ipv4Dns = @([pscustomobject]@{ InterfaceIndex = 7; ServerAddresses = @('1.1.1.1') })
+            ipv6Addresses = @([pscustomobject]@{ InterfaceIndex = 7; IPAddress = 'fe80::10'; PrefixLength = 64 })
+            ipv6Routes = @([pscustomobject]@{ InterfaceIndex = 7; DestinationPrefix = 'fe80::/64'; NextHop = '::'; RouteMetric = 5 })
+            ipv6Dns = @([pscustomobject]@{ InterfaceIndex = 7; ServerAddresses = @('2606:4700:4700::1111') })
+        }
+        $before = [pscustomobject]@{ schemaVersion = 2; os = @{ build = '1' }; proxy = @{ value = $null }; winget = @{ available = $true }; firewallProfiles = @(); network = $network }
         $same = $before | ConvertTo-Json -Depth 8 | ConvertFrom-Json
         $equal = Compare-AcceptanceSystemState -Before $before -After $same
         $equal.equal | Should -BeTrue
@@ -31,6 +40,99 @@ Describe 'Acceptance evidence tooling' {
         $changed = Compare-AcceptanceSystemState -Before $before -After $after
         $changed.equal | Should -BeFalse
         $changed.differences | Should -Contain 'proxy'
+
+        $networkChanged = $before | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+        $networkChanged.network.ipv4Routes[0].NextHop = '192.168.77.254'
+        $networkDifference = Compare-AcceptanceSystemState -Before $before -After $networkChanged
+        $networkDifference.equal | Should -BeFalse
+        $networkDifference.differences | Should -Contain 'network'
+
+        $ipv6Changed = $before | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+        $ipv6Changed.network.ipv6Routes[0].DestinationPrefix = '::/0'
+        $ipv6Difference = Compare-AcceptanceSystemState -Before $before -After $ipv6Changed
+        $ipv6Difference.equal | Should -BeFalse
+        $ipv6Difference.differences | Should -Contain 'network'
+    }
+
+    It 'normalizes network state independently of discovery order' {
+        $first = @{
+            adapters = @(
+                [pscustomobject]@{ InterfaceIndex = 9; Name = 'Second'; InterfaceDescription = 'Adapter B'; Status = 'Disconnected'; MacAddress = '00-11-22-33-44-66' },
+                [pscustomobject]@{ InterfaceIndex = 7; Name = 'First'; InterfaceDescription = 'Adapter A'; Status = 'Up'; MacAddress = '00-11-22-33-44-55' }
+            )
+            ipv4Addresses = @(
+                [pscustomobject]@{ InterfaceIndex = 9; IPAddress = '192.0.2.9'; PrefixLength = 24 },
+                [pscustomobject]@{ InterfaceIndex = 7; IPAddress = '192.168.77.10'; PrefixLength = 24 }
+            )
+            ipv4Routes = @(
+                [pscustomobject]@{ InterfaceIndex = 9; DestinationPrefix = '192.0.2.0/24'; NextHop = '0.0.0.0'; RouteMetric = 10 },
+                [pscustomobject]@{ InterfaceIndex = 7; DestinationPrefix = '0.0.0.0/0'; NextHop = '192.168.77.1'; RouteMetric = 5 }
+            )
+            ipv4Dns = @(
+                [pscustomobject]@{ InterfaceIndex = 9; ServerAddresses = @('9.9.9.9') },
+                [pscustomobject]@{ InterfaceIndex = 7; ServerAddresses = @('8.8.8.8', '1.1.1.1') }
+            )
+            ipv6Addresses = @(
+                [pscustomobject]@{ InterfaceIndex = 9; IPAddress = 'fe80::9'; PrefixLength = 64 },
+                [pscustomobject]@{ InterfaceIndex = 7; IPAddress = 'fe80::7'; PrefixLength = 64 }
+            )
+            ipv6Routes = @(
+                [pscustomobject]@{ InterfaceIndex = 9; DestinationPrefix = 'fe80::/64'; NextHop = '::'; RouteMetric = 10 },
+                [pscustomobject]@{ InterfaceIndex = 7; DestinationPrefix = '::/0'; NextHop = 'fe80::1'; RouteMetric = 5 }
+            )
+            ipv6Dns = @(
+                [pscustomobject]@{ InterfaceIndex = 9; ServerAddresses = @('2620:fe::fe') },
+                [pscustomobject]@{ InterfaceIndex = 7; ServerAddresses = @('2606:4700:4700::1111', '2001:4860:4860::8888') }
+            )
+        }
+        $second = @{
+            adapters = @($first.adapters[1], $first.adapters[0])
+            ipv4Addresses = @($first.ipv4Addresses[1], $first.ipv4Addresses[0])
+            ipv4Routes = @($first.ipv4Routes[1], $first.ipv4Routes[0])
+            ipv4Dns = @(
+                [pscustomobject]@{ InterfaceIndex = 7; ServerAddresses = @('1.1.1.1', '8.8.8.8') },
+                $first.ipv4Dns[0]
+            )
+            ipv6Addresses = @($first.ipv6Addresses[1], $first.ipv6Addresses[0])
+            ipv6Routes = @($first.ipv6Routes[1], $first.ipv6Routes[0])
+            ipv6Dns = @(
+                [pscustomobject]@{ InterfaceIndex = 7; ServerAddresses = @('2001:4860:4860::8888', '2606:4700:4700::1111') },
+                $first.ipv6Dns[0]
+            )
+        }
+
+        $firstJson = ConvertTo-AcceptanceJson -InputObject (ConvertTo-AcceptanceNetworkState -NetworkState $first)
+        $secondJson = ConvertTo-AcceptanceJson -InputObject (ConvertTo-AcceptanceNetworkState -NetworkState $second)
+        $firstJson | Should -BeExactly $secondJson
+        ((ConvertTo-AcceptanceNetworkState -NetworkState $first).ipv4Dns[0].ServerAddresses -join ',') | Should -BeExactly '1.1.1.1,8.8.8.8'
+        ((ConvertTo-AcceptanceNetworkState -NetworkState $first).ipv6Dns[0].ServerAddresses -join ',') | Should -BeExactly '2001:4860:4860::8888,2606:4700:4700::1111'
+    }
+
+    It 'fails closed on incompatible or incomplete system-state schemas' {
+        $network = [pscustomobject]@{
+            adapters = @(); ipv4Addresses = @(); ipv4Routes = @(); ipv4Dns = @()
+            ipv6Addresses = @(); ipv6Routes = @(); ipv6Dns = @()
+        }
+        $version2 = [pscustomobject]@{
+            schemaVersion = 2; os = @{}; proxy = @{}; winget = @{}
+            firewallProfiles = @(); network = $network
+        }
+        $version1 = $version2 | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+        $version1.schemaVersion = 1
+        { Compare-AcceptanceSystemState -Before $version1 -After $version2 } | Should -Throw '*schemaVersion mismatch*'
+
+        $unknown = $version2 | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+        $unknown.schemaVersion = 3
+        { Compare-AcceptanceSystemState -Before $unknown -After $unknown } | Should -Throw '*Unsupported system-state schemaVersion*'
+
+        $missingNetwork = [pscustomobject]@{
+            schemaVersion = 2; os = @{}; proxy = @{}; winget = @{}; firewallProfiles = @()
+        }
+        { Compare-AcceptanceSystemState -Before $missingNetwork -After $version2 } | Should -Throw "*missing required field 'network'*"
+
+        $missingIpv6 = $version2 | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+        $missingIpv6.network.PSObject.Properties.Remove('ipv6Routes')
+        { Compare-AcceptanceSystemState -Before $missingIpv6 -After $version2 } | Should -Throw "*missing required field 'ipv6Routes'*"
     }
 
     It 'compares exact stable application statuses' {
